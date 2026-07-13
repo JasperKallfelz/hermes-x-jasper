@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Hermes Friends Starter — feature overlay for ~/.hermes/config.yaml
+# Hermes x Jasper — feature overlay for ~/.hermes/config.yaml
 # ---------------------------------------------------------------------------
 # This is NOT a full Hermes config. It is a small overlay containing only the
 # keys this starter turns on. Merge it into your existing config with:
@@ -78,7 +78,7 @@ tts:
       type: command
       # {input_path} and {output_path} are substituted by Hermes.
       # Use an absolute path if you cloned this starter somewhere else.
-      command: "python3 ~/hermes-friends-starter/scripts/jarvis_style_tts.py {input_path} {output_path}"
+      command: "python3 ~/hermes-x-jasper/scripts/jarvis_style_tts.py {input_path} {output_path}"
       output_format: mp3
       timeout: 120
       voice_compatible: true     # allow delivery as a Telegram voice bubble

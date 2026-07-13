@@ -106,7 +106,7 @@ tts:
   providers:
     jarvis:
       type: command
-      command: "python3 ~/hermes-friends-starter/scripts/jarvis_style_tts.py {input_path} {output_path}"
+      command: "python3 ~/hermes-x-jasper/scripts/jarvis_style_tts.py {input_path} {output_path}"
       output_format: mp3
       timeout: 120
       voice_compatible: true
@@ -120,7 +120,7 @@ Tune it without editing the script:
 HERMES_TTS_VOICE=en-GB-RyanNeural HERMES_TTS_RATE=-4% HERMES_TTS_PITCH=-5Hz
 ```
 
-Use an absolute path in `command` if you cloned the starter somewhere other than `~/hermes-friends-starter`.
+Use an absolute path in `command` if you cloned the starter somewhere other than `~/hermes-x-jasper`.
 
 ## Speech to text
 

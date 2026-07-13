@@ -1,4 +1,4 @@
-# Hermes Friends Starter
+# Hermes x Jasper
 
 A one-command setup for a **personalised [Hermes Agent](https://github.com/NousResearch/hermes-agent)**: persistent memory, subagent delegation, a browser that drives your *real* Chrome, code execution, streaming replies, and a Discord voice assistant you can actually talk to.
 
@@ -46,8 +46,8 @@ Apple Silicon only: `parakeet-mlx` for local streaming STT. Everything else work
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-account>/hermes-friends-starter
-cd hermes-friends-starter
+git clone https://github.com/JasperKallfelz/hermes-x-jasper.git
+cd hermes-x-jasper
 
 ./setup.sh --dry-run     # see exactly what it will do — nothing is written
 ./setup.sh               # do it
@@ -204,7 +204,7 @@ The upstream checkout is a plain git repo, so the patch is fully reversible.
 
 ```bash
 cd ~/hermes-agent
-git apply --reverse ~/hermes-friends-starter/patches/voice-and-desktop-features.patch
+git apply --reverse ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
 ```
 
 **Reset the checkout to clean upstream:**
@@ -218,7 +218,7 @@ git checkout main && git pull
 **Move to a newer upstream:** the patch is written against the pinned commit and may not apply to a newer one. Check before committing to it:
 
 ```bash
-git -C ~/hermes-agent apply --check ~/hermes-friends-starter/patches/voice-and-desktop-features.patch
+git -C ~/hermes-agent apply --check ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
 ```
 
 If that fails, stay on the pinned commit — or re-roll the patch against the newer tree and open a PR.

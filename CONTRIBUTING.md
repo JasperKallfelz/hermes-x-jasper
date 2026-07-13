@@ -47,8 +47,8 @@ Every step checks its own end state first, and every mutation goes through `run(
 
 ```bash
 cd ~/hermes-agent                       # your patched checkout
-git diff > ~/hermes-friends-starter/patches/voice-and-desktop-features.patch
-cd ~/hermes-friends-starter && make verify
+git diff > ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
+cd ~/hermes-x-jasper && make verify
 ```
 
 Then read your own diff before you commit it. A patch generated from a working tree picks up whatever else is in that tree — that is exactly how a home path or a bot token gets published.
