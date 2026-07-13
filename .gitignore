@@ -1,0 +1,78 @@
+# --- secrets -----------------------------------------------------------------
+# .env.example is tracked on purpose (all values empty); everything else is not.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_rsa
+*_ed25519
+credentials.json
+token.json
+
+# --- local Hermes config and state -------------------------------------------
+# The live config belongs in $HERMES_HOME, never in the repo. If someone copies
+# one here to fiddle with it, it must not be committed.
+config.yaml
+config.yml
+config.local.*
+*.bak
+*.bak-*
+.hermes/
+hermes_home/
+
+# --- upstream checkouts ------------------------------------------------------
+# setup.sh clones upstream outside the repo, but not if someone passes
+# --install-dir . — this keeps that mistake out of git.
+hermes-agent/
+hermes-upstream/
+upstream/
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- audio / voice artefacts -------------------------------------------------
+*.mp3
+*.wav
+*.ogg
+*.opus
+*.m4a
+*.flac
+*.webm
+voice_cache/
+tts_cache/
+models/
+*.onnx
+*.safetensors
+*.gguf
+
+# --- logs and scratch --------------------------------------------------------
+*.log
+logs/
+tmp/
+.tmp/
+*.tmp
+trajectories/
+
+# --- editors / OS ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

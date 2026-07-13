@@ -1,0 +1,129 @@
+# ---------------------------------------------------------------------------
+# Hermes Friends Starter — feature overlay for ~/.hermes/config.yaml
+# ---------------------------------------------------------------------------
+# This is NOT a full Hermes config. It is a small overlay containing only the
+# keys this starter turns on. Merge it into your existing config with:
+#
+#   python3 scripts/merge_config.py --base ~/.hermes/config.yaml \
+#       --overlay config.example.yaml            # dry-run diff
+#   python3 scripts/merge_config.py --base ~/.hermes/config.yaml \
+#       --overlay config.example.yaml --apply    # write (keeps a .bak)
+#
+# By default the merge only ADDS keys you do not have yet; your own values win.
+# Every secret belongs in .env, never here.
+#
+# Keys marked [patch] only exist after patches/voice-and-desktop-features.patch
+# is applied — plain upstream Hermes ignores them.
+# ---------------------------------------------------------------------------
+
+# Persistent memory. The built-in curated memory is on by default; `provider`
+# swaps in an external engine. Leave it empty unless you installed the plugin.
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: false          # true = every memory write asks first
+  provider: ""                   # "" | holographic | mem0 | hindsight | openviking | retaindb
+
+# Context engine. "compressor" is the built-in lossy summarizer; "lcm" is
+# Lossless Context Management and must be installed as a context_engine plugin.
+context:
+  engine: compressor             # compressor | lcm
+
+# Subagent delegation — let delegate_task run children on a cheaper/faster model.
+# Empty values inherit the parent agent's provider and credentials.
+delegation:
+  orchestrator_enabled: true
+  model: ""                      # e.g. "google/gemini-3-flash-preview"
+  provider: ""                   # e.g. "openrouter"
+  max_concurrent_children: 3
+  max_async_children: 3
+  max_spawn_depth: 1
+  subagent_auto_approve: false   # keep human approval in the loop
+
+# Browser. Pointing cdp_url at a loopback DevTools endpoint makes Hermes drive
+# your real, already-logged-in Chrome instead of a fresh headless profile.
+# [patch] auto_launch_local_cdp starts that Chrome on demand when it is not up.
+browser:
+  engine: auto
+  cdp_url: "http://127.0.0.1:9222"
+  auto_launch_local_cdp: true    # [patch]
+  allow_private_urls: false      # keep the agent off your LAN/localhost services
+  command_timeout: 30
+
+# execute_code sandbox: tool results stay out of the context window.
+code_execution:
+  mode: project                  # project | none
+  timeout: 300
+  max_tool_calls: 50
+
+# Token-by-token replies on chat platforms.
+streaming:
+  enabled: true
+  transport: auto
+  edit_interval: 0.8
+
+# ---------------------------------------------------------------------------
+# Speech
+# ---------------------------------------------------------------------------
+# TTS: "edge" is the free Microsoft default. The `jarvis` entry below is a
+# custom command provider (an upstream feature: tts.providers.<name> with
+# type: command) that pipes text through scripts/jarvis_style_tts.py for a
+# filtered, assistant-style voice. Switch by setting tts.provider.
+tts:
+  provider: edge                 # edge | jarvis | openai | elevenlabs | piper | ...
+  edge:
+    voice: en-US-AriaNeural
+  providers:
+    jarvis:
+      type: command
+      # {input_path} and {output_path} are substituted by Hermes.
+      # Use an absolute path if you cloned this starter somewhere else.
+      command: "python3 ~/hermes-friends-starter/scripts/jarvis_style_tts.py {input_path} {output_path}"
+      output_format: mp3
+      timeout: 120
+      voice_compatible: true     # allow delivery as a Telegram voice bubble
+
+# STT for inbound voice messages. Upstream supports local faster-whisper and a
+# few cloud providers; there is no command-provider hook for STT, so the local
+# Parakeet path is wired through the Discord streaming STT below instead.
+stt:
+  enabled: true
+  provider: local                # local | openai | groq | mistral | elevenlabs
+  local:
+    model: base                  # tiny | base | small | medium | large-v3
+    language: ""                 # "" = auto-detect
+
+voice:
+  auto_tts: false
+  max_recording_seconds: 120
+
+# ---------------------------------------------------------------------------
+# Discord voice [patch]
+# ---------------------------------------------------------------------------
+# Everything under voice_fx beyond the stock gains is added by this starter's
+# patch: a live audio mixer, spoken acknowledgements, barge-in, and an optional
+# always-loaded local Parakeet (MLX, Apple Silicon) for incremental transcripts.
+discord:
+  voice_fx:
+    enabled: true
+    ambient_enabled: false
+    ambient_gain: 0.18
+    duck_gain: 0.06
+    speech_gain: 1.0
+    ack_enabled: true            # speak a short phrase before the first tool call
+
+    join_greeting_enabled: true  # [patch] greet an allowed user joining the channel
+    join_greeting_phrases:       # [patch] pick your own; keep them short
+      - "Hey, I'm here."
+      - "Hello, ready when you are."
+      - "Welcome back."
+
+    barge_in_enabled: true       # [patch] talking over the bot interrupts it
+    barge_in_min_ms: 320         # [patch] ignore coughs/backchannel noise
+
+    # [patch] Local streaming STT. Requires parakeet-mlx (Apple Silicon).
+    # Off by default: without it Hermes uses the file-based stt.provider above.
+    streaming_stt_enabled: false
+    streaming_stt_model: "mlx-community/parakeet-tdt-0.6b-v3"
+    streaming_stt_endpoint_silence: 0.45
+    streaming_stt_chunk_ms: 500
