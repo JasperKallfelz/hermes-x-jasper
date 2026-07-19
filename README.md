@@ -1,6 +1,9 @@
-# Hermes CLI Starter
+# Hermes CLI Starter `alpha`
 
-A one-command setup for a **personalised [Hermes Agent](https://github.com/NousResearch/hermes-agent)**: persistent memory, subagent delegation, a browser that drives your *real* Chrome, code execution, streaming replies, and a Discord voice assistant you can actually talk to.
+> [!WARNING]
+> **Alpha.** This starter is under active development and not yet stable. Interfaces, the feature patch, and the config layout may change without notice. Expect rough edges — pin what you depend on.
+
+A one-command setup for a **personalised [Hermes Agent](https://github.com/NousResearch/hermes-agent)**: persistent memory, subagent delegation, a browser that drives your *real* Chrome, code execution, streaming replies, and polished Telegram + TTS voice ergonomics.
 
 > [!IMPORTANT]
 > **This is an unofficial community starter. It is not affiliated with, endorsed by, or maintained by Nous Research.**
@@ -19,16 +22,16 @@ A one-command setup for a **personalised [Hermes Agent](https://github.com/NousR
 | **Streaming** | Token-by-token replies on chat platforms | upstream |
 | **Custom TTS** | Any local binary as a TTS provider (`type: command`) | upstream |
 | **Auto-CDP browser** | Points Hermes at your logged-in Chrome and launches it on demand — no more bot walls | **patch** |
-| **Discord voice mixer** | Continuous audio mixer: ambient bed, ducking, spoken acknowledgements before tool calls | **patch** |
-| **Barge-in** | Talk over the bot and it stops talking | **patch** |
-| **Join greeting** | Greets an allowed user entering the voice channel | **patch** |
-| **Streaming STT** | Keeps Parakeet (MLX) loaded for incremental transcripts — Apple Silicon only, off by default | **patch** |
-| **Voice jobs / orchestration** | Long voice requests become detached background agents instead of blocking the call | **patch** |
+| **TTS runtime overrides** | Per-call provider/voice overrides for the TTS tool | **patch** |
+| **Telegram polish** | Location-request keyboards are cleaned up automatically after a share | **patch** |
 | **JARVIS-style voice** | Edge TTS + an ffmpeg filter chain for a filtered assistant voice | script |
 | **Local Second Brain starter** | Optional approved-root scanner, SQLite state, dry-run sync, and explicit OpenViking CLI export of approved excerpts | module |
 
 "patch" = added by `patches/voice-and-desktop-features.patch`. "script" = `scripts/`.
 "module" = the independent `second-brain/` Python package in this repo.
+
+> [!NOTE]
+> The Discord voice stack (voice mixer, barge-in, join greeting, streaming STT, voice jobs) has been split out of the main patch and is **not currently shipped** here. It is being rearchitected (isolated Node media gateway) and will return once it is stable.
 
 ---
 
@@ -37,11 +40,9 @@ A one-command setup for a **personalised [Hermes Agent](https://github.com/NousR
 - **macOS** (Apple Silicon or Intel) or **Linux**
 - **Python 3.11+**
 - **git**
-- **ffmpeg** — required for any voice feature (`brew install ffmpeg` / `sudo apt install ffmpeg`)
+- **ffmpeg** — required for the JARVIS-style TTS script (`brew install ffmpeg` / `sudo apt install ffmpeg`)
 - **An API key** from at least one model provider (OpenRouter is the easiest single key)
-- Optional: a Telegram bot, a Discord bot, Google Chrome (for the auto-CDP browser)
-
-Apple Silicon only: `parakeet-mlx` for local streaming STT. Everything else works on both platforms.
+- Optional: a Telegram bot, Google Chrome (for the auto-CDP browser)
 
 ---
 
@@ -114,25 +115,6 @@ TELEGRAM_ALLOWED_USERS=
 > [!WARNING]
 > `TELEGRAM_ALLOWED_USERS` is the only thing standing between your agent and whoever finds the bot. An agent with an empty allowlist will run tools for strangers. Set it.
 
-### Discord
-
-1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application** → **Bot** → **Reset Token**
-2. Under **Bot → Privileged Gateway Intents**, enable **MESSAGE CONTENT** and **SERVER MEMBERS**
-3. Invite the bot with the `bot` scope and the *Connect* + *Speak* voice permissions
-
-```dotenv
-DISCORD_BOT_TOKEN=
-DISCORD_ALLOWED_USERS=
-
-# Optional: auto-join a voice channel on startup (all numeric ids)
-DISCORD_VOICE_AUTOJOIN_CHANNEL_ID=
-DISCORD_VOICE_AUTOJOIN_TEXT_CHANNEL_ID=
-DISCORD_VOICE_AUTOJOIN_GUILD_ID=
-DISCORD_VOICE_AUTOJOIN_USER_NAME=
-```
-
-To get an id: Discord → Settings → Advanced → **Developer Mode**, then right-click any channel/server → *Copy ID*.
-
 ---
 
 ## Architecture
@@ -147,10 +129,9 @@ patches/voice-and-           ──►│ git apply
 desktop-features.patch          │
                                 ▼
                        ~/hermes-agent/          (patched upstream checkout)
-                         gateway/               voice_domain, voice_jobs
-                         plugins/platforms/     discord adapter, mixer, streaming STT
                          tools/                 browser_tool (auto-CDP), tts_tool
-                         hermes_cli/config.py   new voice_fx defaults
+                         hermes_cli/            browser_connect (auto-CDP launch)
+                         plugins/platforms/     telegram adapter polish
                                 ▲
 config.example.yaml ───────────►│ merge (never blind-overwrites)
 .env.example ──────────────────►│
@@ -160,7 +141,7 @@ scripts/jarvis_style_tts.py ─►  wired in as a `type: command` TTS provider
 scripts/parakeet_stt_limited.py  local bilingual STT helper
 ```
 
-The patch adds ~2 400 lines across 18 files: Discord voice (mixer, barge-in, greetings, streaming STT), background voice jobs, the auto-CDP browser, TTS runtime overrides — plus tests for all of it. Nothing is vendored: upstream stays a clean git checkout you can `git diff` against at any time.
+The patch is deliberately small (~370 lines across 5 files): the auto-CDP browser, TTS runtime overrides, and Telegram keyboard cleanup — plus tests. Nothing is vendored: upstream stays a clean git checkout you can `git diff` against at any time.
 
 Pinned upstream commit: **`b56aafc2ef6befd96ecf00bf4788031cf4be169b`** (Hermes Agent v0.17.0).
 

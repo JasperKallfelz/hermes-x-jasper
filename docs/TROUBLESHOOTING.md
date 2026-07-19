@@ -100,36 +100,13 @@ Your `config.yaml` is malformed (or is a list). `merge_config.py` refuses to tou
 
 ---
 
-## Telegram / Discord
+## Telegram
 
 ### The bot ignores me
 
-Almost always the allowlist. Your numeric id must be in `TELEGRAM_ALLOWED_USERS` / `DISCORD_ALLOWED_USERS` in `~/.hermes/.env`. Get it from [@userinfobot](https://t.me/userinfobot) (Telegram) or by right-clicking yourself with Developer Mode on (Discord).
+Almost always the allowlist. Your numeric id must be in `TELEGRAM_ALLOWED_USERS` in `~/.hermes/.env`. Get it from [@userinfobot](https://t.me/userinfobot).
 
 If the allowlist is *empty*, fix that immediately — that is not "the bot is broken", that is "anyone can use your agent". See [SECURITY.md](../SECURITY.md).
-
-### Discord: `PrivilegedIntentsRequired` on startup
-
-The bot lacks its privileged intents. Discord Developer Portal → your app → **Bot** → **Privileged Gateway Intents** → enable **MESSAGE CONTENT** and **SERVER MEMBERS** → restart.
-
-### Discord: the bot reads text but not voice
-
-Voice needs `ffmpeg` and the *Connect* + *Speak* permissions in the channel. Also confirm `discord.voice_fx.enabled: true` and that the patch is applied — without it there is no voice pipeline at all.
-
-### Discord: it joins the channel but never hears me
-
-The gateway is not receiving audio (a Discord-side or network issue, usually), or every utterance is being discarded as too short. Turn up the logs and look for `Voice RTP packet` / `Voice decoded audio` lines:
-
-- No RTP packets at all → Discord is not delivering UDP audio. Check firewall/VPN.
-- Packets, but `unmapped ssrc` → the speaker could not be resolved to a user; usually fixed by leaving and rejoining the channel.
-
-### It interrupts itself constantly / never lets me interrupt
-
-Barge-in sensitivity. Raise `barge_in_min_ms` (e.g. `600`) if background noise keeps cutting the bot off; lower it (e.g. `200`) if talking over it does nothing.
-
-### It cuts me off mid-sentence
-
-Raise `streaming_stt_endpoint_silence` (e.g. `0.8`) — that is how long a pause has to be before your turn counts as finished.
 
 ---
 
@@ -147,10 +124,6 @@ Check the command path in `config.yaml` actually exists — if you cloned the st
 echo "Systems online." > /tmp/in.txt
 python3 scripts/jarvis_style_tts.py /tmp/in.txt /tmp/out.mp3
 ```
-
-### Streaming STT stays off
-
-It requires `parakeet-mlx`, which requires Apple Silicon. On Intel Macs and Linux it will not install and Hermes falls back to the file-based `stt.provider` — that is the intended behaviour, not a bug. Verify: `~/hermes-agent/venv/bin/pip show parakeet-mlx`.
 
 ---
 

@@ -129,9 +129,14 @@ elif git -C "$INSTALL_DIR" apply --reverse --check "$PATCH_FILE" 2>/dev/null; th
 elif git -C "$INSTALL_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
   git -C "$INSTALL_DIR" apply "$PATCH_FILE"
   ok "patch applied"
+elif git -C "$INSTALL_DIR" apply --3way "$PATCH_FILE" 2>/dev/null; then
+  # Plain apply did not fit, but a 3-way merge against the blobs recorded in
+  # the patch resolved the drift cleanly.
+  ok "patch applied (3-way merge)"
 else
-  die "patch does not apply to $INSTALL_DIR. Is the checkout at $PINNED_COMMIT and clean?
-     Inspect with: git -C '$INSTALL_DIR' apply --check -v '$PATCH_FILE'"
+  die "patch does not apply to $INSTALL_DIR, even with a 3-way merge. Is the checkout at $PINNED_COMMIT and clean?
+     Inspect with: git -C '$INSTALL_DIR' apply --3way -v '$PATCH_FILE'
+     If conflict markers were left behind: git -C '$INSTALL_DIR' checkout -- ."
 fi
 
 # --- 4. upstream install ---------------------------------------------------
@@ -168,8 +173,8 @@ else
       || warn "voice deps failed to install — TTS/STT scripts may not run"
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
       "$PIP" install --quiet parakeet-mlx \
-        && ok "parakeet-mlx (Apple Silicon streaming STT)" \
-        || warn "parakeet-mlx not installed — streaming STT stays off"
+        && ok "parakeet-mlx (Apple Silicon local STT for scripts/parakeet_stt_limited.py)" \
+        || warn "parakeet-mlx not installed — the local Parakeet STT helper will not run"
     fi
   else
     warn "no venv at $PIP — skipping voice deps"
