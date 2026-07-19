@@ -20,7 +20,7 @@ The checkout is not at the pinned commit, or something already modified it. Find
 ```bash
 git -C ~/hermes-agent rev-parse HEAD          # should be b56aafc2ef...
 git -C ~/hermes-agent status --short          # should be empty
-git -C ~/hermes-agent apply --check -v ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
+git -C ~/hermes-agent apply --check -v ~/hermes-cli-starter/patches/voice-and-desktop-features.patch
 ```
 
 If the patch is *already applied*, `setup.sh` detects that and skips it — this error means something else. To get back to a known-good state:
@@ -141,7 +141,7 @@ Raise `streaming_stt_endpoint_silence` (e.g. `0.8`) — that is how long a pause
 
 ### The JARVIS voice does not run
 
-Check the command path in `config.yaml` actually exists — if you cloned the starter somewhere other than `~/hermes-x-jasper`, `tts.providers.jarvis.command` still points at the old path. Use an absolute path. Test it standalone:
+Check the command path in `config.yaml` actually exists — if you cloned the starter somewhere other than `~/hermes-cli-starter`, `tts.providers.jarvis.command` still points at the old path. Use an absolute path. Test it standalone:
 
 ```bash
 echo "Systems online." > /tmp/in.txt

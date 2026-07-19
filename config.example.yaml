@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Hermes x Jasper — feature overlay for ~/.hermes/config.yaml
+# Hermes CLI Starter — feature overlay for ~/.hermes/config.yaml
 # ---------------------------------------------------------------------------
 # This is NOT a full Hermes config. It is a small overlay containing only the
 # keys this starter turns on. Merge it into your existing config with:
@@ -23,6 +23,16 @@ memory:
   user_profile_enabled: true
   write_approval: false          # true = every memory write asks first
   provider: ""                   # "" | holographic | mem0 | hindsight | openviking | retaindb
+
+# Optional local Second Brain starter included in ./second-brain.
+# This is a config overlay only. It does not claim a Hermes plugin exists; run
+# the helper CLI yourself or from your own local scheduler.
+second_brain:
+  enabled: false
+  manifest: "~/second-brain.toml"
+  raw_data_policy: "local-only"
+  export_policy: "approved-redacted-summaries"
+  sync_command: "hermes-second-brain --manifest ~/second-brain.toml sync --dry-run"
 
 # Context engine. "compressor" is the built-in lossy summarizer; "lcm" is
 # Lossless Context Management and must be installed as a context_engine plugin.
@@ -78,7 +88,7 @@ tts:
       type: command
       # {input_path} and {output_path} are substituted by Hermes.
       # Use an absolute path if you cloned this starter somewhere else.
-      command: "python3 ~/hermes-x-jasper/scripts/jarvis_style_tts.py {input_path} {output_path}"
+      command: "python3 ~/hermes-cli-starter/scripts/jarvis_style_tts.py {input_path} {output_path}"
       output_format: mp3
       timeout: 120
       voice_compatible: true     # allow delivery as a Telegram voice bubble

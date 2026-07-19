@@ -44,8 +44,8 @@ fi
 
 # --- 2. python compiles ----------------------------------------------------
 step "Python syntax"
-if python3 -m compileall -q scripts tests >/dev/null; then
-  pass "compileall scripts tests"
+if python3 -m compileall -q scripts tests second-brain/src second-brain/tests >/dev/null; then
+  pass "compileall scripts tests second-brain"
 else
   fail "compileall found a syntax error"
 fi
@@ -53,7 +53,7 @@ fi
 # --- 3. tests --------------------------------------------------------------
 step "Tests"
 if python3 -c 'import yaml' 2>/dev/null; then
-  if python3 -m pytest tests -q 2>/dev/null || python3 -m unittest discover -s tests -q; then
+  if python3 -m pytest tests second-brain/tests -q 2>/dev/null || python3 -m unittest discover -s tests -q; then
     pass "test suite"
   else
     fail "test suite"
@@ -64,7 +64,7 @@ fi
 
 # --- 4. leak audit ---------------------------------------------------------
 step "Public audit"
-if python3 scripts/audit_public.py "$REPO_DIR"; then
+if python3 scripts/audit_public.py "$REPO_DIR" --history; then
   pass "no secrets/PII/local paths"
 else
   fail "audit_public found something — do not publish"

@@ -1,4 +1,4 @@
-# Hermes x Jasper
+# Hermes CLI Starter
 
 A one-command setup for a **personalised [Hermes Agent](https://github.com/NousResearch/hermes-agent)**: persistent memory, subagent delegation, a browser that drives your *real* Chrome, code execution, streaming replies, and a Discord voice assistant you can actually talk to.
 
@@ -25,8 +25,10 @@ A one-command setup for a **personalised [Hermes Agent](https://github.com/NousR
 | **Streaming STT** | Keeps Parakeet (MLX) loaded for incremental transcripts — Apple Silicon only, off by default | **patch** |
 | **Voice jobs / orchestration** | Long voice requests become detached background agents instead of blocking the call | **patch** |
 | **JARVIS-style voice** | Edge TTS + an ffmpeg filter chain for a filtered assistant voice | script |
+| **Local Second Brain starter** | Optional approved-root scanner, SQLite state, dry-run sync, and OpenViking CLI export of redacted summaries | module |
 
 "patch" = added by `patches/voice-and-desktop-features.patch`. "script" = `scripts/`.
+"module" = the independent `second-brain/` Python package in this repo.
 
 ---
 
@@ -46,8 +48,8 @@ Apple Silicon only: `parakeet-mlx` for local streaming STT. Everything else work
 ## Quick start
 
 ```bash
-git clone https://github.com/JasperKallfelz/hermes-x-jasper.git
-cd hermes-x-jasper
+git clone https://github.com/example/hermes-cli-starter.git
+cd hermes-cli-starter
 
 ./setup.sh --dry-run     # see exactly what it will do — nothing is written
 ./setup.sh               # do it
@@ -184,12 +186,55 @@ The merge is `yaml.safe_load` only, writes atomically, and always backs up first
 
 ---
 
+## Optional Local Second Brain
+
+This repo includes a public-safe Second Brain helper at [second-brain/README.md](second-brain/README.md). It is not a bundled Hermes plugin and does not run automatically. Treat it as a local CLI you can install beside Hermes.
+
+Install and test it:
+
+```bash
+cd second-brain
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+python -m pip install pytest
+python -m pytest -q
+```
+
+Initialize a private manifest in a local workspace, then edit the approved roots:
+
+```bash
+mkdir -p ~/hermes-second-brain-local
+cd ~/hermes-second-brain-local
+hermes-second-brain init --manifest second-brain.toml
+$EDITOR second-brain.toml
+```
+
+Use it:
+
+```bash
+hermes-second-brain --manifest second-brain.toml scan
+hermes-second-brain --manifest second-brain.toml sync --dry-run
+hermes-second-brain --manifest second-brain.toml sync
+```
+
+Safe boundaries:
+
+- Raw notes, inboxes, chat exports, and SQLite state stay local and ignored by git.
+- Only files under manifest `[[approved_roots]]` are scanned.
+- Secret-looking paths, virtualenvs, caches, build output, SQLite databases, JSONL logs, `.env` files, tokens, credentials, and private keys are skipped.
+- OpenViking receives only approved, redacted summaries through the local `ov add-resource` / `ov write` commands.
+- Production manifests, scheduler labels, account IDs, personal paths, and private integration glue are intentionally omitted. Add them only in private local config.
+
+---
+
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before you expose this to anyone. The short version:
 
 - **Set your allowlists.** An agent reachable by strangers is a shell reachable by strangers.
 - **Secrets live in `~/.hermes/.env`**, never in `config.yaml`, never in git.
+- **Second Brain raw data lives outside git.** Commit only example manifests with placeholder paths.
 - The agent can **run code and use your browser session**. Treat it as software running as you.
 - `browser.cdp_url` points at your *real, logged-in* Chrome. Anything you are logged into, the agent is logged into.
 - Before publishing any fork of this repo: `make audit`.
@@ -204,7 +249,7 @@ The upstream checkout is a plain git repo, so the patch is fully reversible.
 
 ```bash
 cd ~/hermes-agent
-git apply --reverse ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
+git apply --reverse ~/hermes-cli-starter/patches/voice-and-desktop-features.patch
 ```
 
 **Reset the checkout to clean upstream:**
@@ -218,7 +263,7 @@ git checkout main && git pull
 **Move to a newer upstream:** the patch is written against the pinned commit and may not apply to a newer one. Check before committing to it:
 
 ```bash
-git -C ~/hermes-agent apply --check ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
+git -C ~/hermes-agent apply --check ~/hermes-cli-starter/patches/voice-and-desktop-features.patch
 ```
 
 If that fails, stay on the pinned commit — or re-roll the patch against the newer tree and open a PR.

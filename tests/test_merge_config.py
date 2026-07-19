@@ -138,7 +138,7 @@ class TestShippedOverlay(unittest.TestCase):
         overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
         data = merge_config.load_yaml(overlay)
         for section in ("memory", "delegation", "browser", "code_execution",
-                        "streaming", "tts", "stt", "discord"):
+                        "streaming", "tts", "stt", "discord", "second_brain"):
             self.assertIn(section, data, f"{section} missing from config.example.yaml")
 
     def test_overlay_carries_no_secrets(self):

@@ -50,13 +50,15 @@ class TestCatchesRealLeaks(unittest.TestCase):
         )
 
     def test_macos_home_path(self):
-        self.assertIn("macos-home", rules("cd /Users/ada.lovelace/hermes"))
+        path = "/" + "Users" + "/localaccount/hermes"
+        self.assertIn("macos-home", rules(f"cd {path}"))
 
     def test_linux_home_path(self):
-        self.assertIn("linux-home", rules("log: /home/alanturing/.hermes/config.yaml"))
+        path = "/" + "home" + "/workstation/.hermes/config.yaml"
+        self.assertIn("linux-home", rules(f"log: {path}"))
 
     def test_real_email(self):
-        self.assertIn("email", rules("contact: ada.lovelace@analytical-engine.co.uk"))
+        self.assertIn("email", rules("contact: account@company.co"))
 
     def test_discord_snowflake(self):
         self.assertIn("discord-snowflake", rules("guild_id = 934721085463920174"))
@@ -65,11 +67,11 @@ class TestCatchesRealLeaks(unittest.TestCase):
         self.assertIn("telegram-group-id", rules("chat_id: -1001938475620"))
 
     def test_denylist_hits(self):
-        found = rules("the maintainer is Ada Lovelace", denylist=["ada lovelace"])
+        found = rules("the maintainer is InternalCodeName", denylist=["internalcodename"])
         self.assertIn("denylist", found)
 
     def test_denylist_is_case_insensitive(self):
-        self.assertIn("denylist", rules("Contact ADA LOVELACE", denylist=["Ada Lovelace"]))
+        self.assertIn("denylist", rules("Contact INTERNALCODENAME", denylist=["InternalCodeName"]))
 
 
 class TestIgnoresPlaceholders(unittest.TestCase):
@@ -89,8 +91,8 @@ class TestIgnoresPlaceholders(unittest.TestCase):
         self.assertEqual(rules("email: user@example.com"), set())
 
     def test_generic_home_paths(self):
-        self.assertEqual(rules("/Users/you/hermes-agent"), set())
-        self.assertEqual(rules("/home/user/.hermes"), set())
+        self.assertEqual(rules("/" + "Users" + "/you/hermes-agent"), set())
+        self.assertEqual(rules("/" + "home" + "/user/.hermes"), set())
 
     def test_repeated_digit_fixture_ids(self):
         self.assertEqual(rules("DISCORD_VOICE_AUTOJOIN_GUILD_ID=000000000000000000"), set())
@@ -108,9 +110,10 @@ class TestFileWalk(unittest.TestCase):
             root = Path(td)
             (root / ".git").mkdir()
             (root / ".git" / "config").write_text("url = git@github.com:someone/x.git\n")
+            (root / "linked-worktree.git").write_text("gitdir: /local/metadata\n")
             (root / "ok.txt").write_text("hello\n")
-            names = [p.name for p in audit_public.iter_files(root)]
-            self.assertEqual(names, ["ok.txt"])
+            names = [p.name for p in audit_public.iter_files(root, tracked_only=False)]
+            self.assertEqual(names, ["linked-worktree.git", "ok.txt"])
 
     def test_skips_binary_files(self):
         with TemporaryDirectory() as td:
@@ -160,6 +163,7 @@ class TestEndToEnd(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("github-token", proc.stdout)
             self.assertIn("leak.py:1", proc.stdout)
+            self.assertNotIn("ghp_9sKq2", proc.stdout)
 
 
 if __name__ == "__main__":

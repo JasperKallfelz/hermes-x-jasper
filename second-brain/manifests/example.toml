@@ -1,0 +1,34 @@
+# Copy this file to a private location, then edit paths for your machine.
+# Keep production manifests out of git.
+state_path = ".second-brain/state.sqlite3"
+
+[openviking]
+command = ["ov"]
+namespace_prefix = "second-brain"
+
+[[approved_roots]]
+name = "notes"
+path = "./notes"
+namespace = "notes"
+include = ["**/*.md", "**/*.txt", "**/*.rst"]
+exclude = [
+  "**/.git/**",
+  "**/.venv/**",
+  "**/venv/**",
+  "**/__pycache__/**",
+  "**/.pytest_cache/**",
+  "**/node_modules/**",
+  "**/dist/**",
+  "**/build/**",
+  "**/*.sqlite",
+  "**/*.sqlite3",
+  "**/*.db",
+  "**/*.jsonl",
+  "**/.env",
+  "**/.env.*",
+  "**/*secret*",
+  "**/*token*",
+  "**/*credential*",
+  "**/*private*key*",
+]
+summary_max_chars = 1200

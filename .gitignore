@@ -21,6 +21,14 @@ config.local.*
 .hermes/
 hermes_home/
 
+# --- second-brain local data -------------------------------------------------
+second-brain.toml
+.second-brain/
+second-brain/state/
+second-brain/*.sqlite*
+second-brain/*.jsonl
+second-brain/notes/
+
 # --- upstream checkouts ------------------------------------------------------
 # setup.sh clones upstream outside the repo, but not if someone passes
 # --install-dir . — this keeps that mistake out of git.

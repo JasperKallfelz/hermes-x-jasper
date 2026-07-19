@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Scan a repository for secrets, PII and local paths before it goes public.
+"""Scan tracked repository content for secrets, PII and local paths.
 
-Walks the tree (skipping .git and other noise), matches every text line against
-a set of leak patterns, and prints ``path:line: [rule] message`` for each hit.
+By default, a git checkout scans tracked files only. Outside git, it falls back
+to walking the tree (skipping .git and other noise). It matches every text line
+against a set of leak patterns, and prints ``path:line: [rule] message`` for
+each hit. Messages intentionally do not echo the matched value.
 Exits non-zero when anything is found, so it can gate CI and `make check`.
 
 Placeholders are expected in a starter repo: a line is only reported when it
@@ -13,15 +15,16 @@ without matching itself.
 Extra project-specific strings can be supplied via PUBLIC_AUDIT_DENYLIST, which
 is either a path to a newline-separated file or a comma-separated list:
 
-    PUBLIC_AUDIT_DENYLIST="ada lovelace,my-vpn.example" ./scripts/audit_public.py
+    PUBLIC_AUDIT_DENYLIST="internalcodename,my-vpn.example" ./scripts/audit_public.py
     PUBLIC_AUDIT_DENYLIST=~/.hermes-denylist.txt ./scripts/audit_public.py
 
-Usage: audit_public.py [ROOT] [--quiet]
+Usage: audit_public.py [ROOT] [--quiet] [--history] [--all-files]
 """
 from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable, NamedTuple
@@ -168,20 +171,48 @@ def scan_text(text: str, denylist: Iterable[str] = ()) -> list[tuple[int, str, s
             for match in rule.pattern.findall(line):
                 found = match if isinstance(match, str) else match[0]
                 if _accept(rule, found, line, deny):
-                    findings.append((lineno, rule.name, f"{rule.message}: {found}"))
+                    findings.append((lineno, rule.name, rule.message))
                     break
         low = line.lower()
         for needle in deny:
             if needle in low:
-                findings.append((lineno, "denylist", f"denylisted string: {needle}"))
+                findings.append((lineno, "denylist", "denylisted string"))
                 break
     return findings
 
 
-def iter_files(root: Path) -> Iterable[Path]:
+def _git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _is_git_worktree(root: Path) -> bool:
+    proc = _git(root, ["rev-parse", "--is-inside-work-tree"])
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def iter_files(root: Path, tracked_only: bool = True) -> Iterable[Path]:
+    if tracked_only and _is_git_worktree(root):
+        proc = _git(root, ["ls-files", "-z"])
+        if proc.returncode == 0:
+            for raw in proc.stdout.split("\0"):
+                if raw:
+                    path = root / raw
+                    if path.suffix.lower() not in SKIP_SUFFIXES:
+                        yield path
+            return
+
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(filenames):
+            # A linked worktree stores its Git metadata in a `.git` file whose
+            # absolute path is local machine state, never publishable content.
+            if name == ".git":
+                continue
             path = Path(dirpath) / name
             if path.suffix.lower() in SKIP_SUFFIXES:
                 continue
@@ -202,14 +233,49 @@ def read_text(path: Path) -> str | None:
         return None
 
 
+def scan_history(root: Path, denylist: Iterable[str]) -> int:
+    """Scan reachable git blobs without printing matched values."""
+    if not _is_git_worktree(root):
+        return 0
+    revs = _git(root, ["rev-list", "--all"])
+    if revs.returncode != 0 or not revs.stdout.strip():
+        return 0
+
+    total = 0
+    listed = _git(root, ["rev-list", "--objects", "--all"])
+    if listed.returncode != 0:
+        print("history:0: [git] could not enumerate history")
+        return 1
+
+    seen: set[str] = set()
+    for line in listed.stdout.splitlines():
+        if not line:
+            continue
+        blob, _, name = line.partition(" ")
+        if blob in seen or not name or Path(name).suffix.lower() in SKIP_SUFFIXES:
+            continue
+        seen.add(blob)
+        cat = _git(root, ["cat-file", "-p", blob])
+        if cat.returncode != 0 or "\x00" in cat.stdout:
+            continue
+        if ALLOW_FILE_MARKER in cat.stdout:
+            continue
+        for lineno, rule, message in scan_text(cat.stdout, denylist):
+            print(f"history:{name}:{lineno}: [{rule}] {message}")
+            total += 1
+    return total
+
+
 def main(argv: list[str]) -> int:
     args = [a for a in argv[1:] if not a.startswith("-")]
     quiet = "--quiet" in argv[1:]
+    history = "--history" in argv[1:]
+    tracked_only = "--all-files" not in argv[1:]
     root = Path(args[0]).expanduser().resolve() if args else Path.cwd()
     denylist = load_denylist()
 
     total = 0
-    for path in iter_files(root):
+    for path in iter_files(root, tracked_only=tracked_only):
         text = read_text(path)
         if text is None or ALLOW_FILE_MARKER in text:
             continue
@@ -217,6 +283,8 @@ def main(argv: list[str]) -> int:
             rel = path.relative_to(root) if path.is_relative_to(root) else path
             print(f"{rel}:{lineno}: [{rule}] {message}")
             total += 1
+    if history:
+        total += scan_history(root, denylist)
 
     if total:
         print(f"\n{total} potential leak(s) found — do not publish until resolved.",

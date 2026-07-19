@@ -13,7 +13,7 @@ dry-run: ## Show what setup.sh would do, without changing anything
 	./setup.sh --dry-run
 
 test: ## Run the test suite
-	$(PYTHON) -m pytest tests -q
+	$(PYTHON) -m pytest tests second-brain/tests -q
 
 audit: ## Scan this repo for secrets, PII and local paths
 	$(PYTHON) scripts/audit_public.py .
@@ -26,4 +26,4 @@ merge: ## Dry-run merge the feature overlay into your live config
 
 clean: ## Remove Python caches
 	find . -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
-	rm -rf .pytest_cache
+	rm -rf .pytest_cache second-brain/.pytest_cache second-brain/src/*.egg-info

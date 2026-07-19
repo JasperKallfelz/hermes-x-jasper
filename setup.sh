@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Hermes x Jasper — installer
+# Hermes CLI Starter — installer
 #
 # Clones upstream Hermes Agent at a pinned, tested commit, runs the upstream
 # installer, applies this starter's feature patch, and copies EXAMPLE files
@@ -63,7 +63,7 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 HERMES_HOME="${HERMES_HOME/#\~/$HOME}"
 
 echo
-info "Hermes x Jasper"
+info "Hermes CLI Starter"
 echo "  upstream    : $UPSTREAM_REPO"
 echo "  commit      : $PINNED_COMMIT"
 echo "  install dir : $INSTALL_DIR"

@@ -30,13 +30,13 @@ jobs:
           shellcheck -S warning setup.sh verify.sh
 
       - name: Python syntax
-        run: python -m compileall -q scripts tests
+        run: python -m compileall -q scripts tests second-brain/src second-brain/tests
 
       - name: Tests
-        run: python -m pytest tests -q
+        run: python -m pytest tests second-brain/tests -q
 
       - name: Public audit (secrets, PII, local paths)
-        run: python scripts/audit_public.py .
+        run: python scripts/audit_public.py . --history
 
       - name: Patch applies to pinned upstream
         run: |
