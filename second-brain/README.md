@@ -1,8 +1,10 @@
-# Hermes Second Brain
+# Hermes Second Brain (Local Starter)
 
-A small, public-safe local Second Brain module for this Hermes starter.
+A public-repository-safe local Second Brain module for this Hermes starter.
 
-It scans only manifest-approved local roots, turns matching text files into deterministic resource records, stores local sync state in SQLite, and can send redacted summaries to a user-installed OpenViking `ov` CLI. It does not bundle credentials, production manifests, chat logs, state databases, account IDs, or private integrations.
+It scans only manifest-approved local roots, turns matching text files into deterministic resource records, stores local sync state in SQLite, and can send limited excerpts to a user-installed OpenViking `ov` CLI. It does not bundle credentials, production manifests, chat logs, state databases, account IDs, or private integrations.
+
+**Important:** this is not a general PII/secret-scrubber. It performs only basic redaction (home paths, email addresses, and several token shapes). Treat every approved root as intentionally shareable with the configured OpenViking instance, and inspect `scan` output before using `--apply`.
 
 ## Install
 
@@ -30,13 +32,13 @@ Edit `second-brain.toml` so `[[approved_roots]]` points only at folders whose su
 ```bash
 hermes-second-brain --manifest second-brain.toml scan
 hermes-second-brain --manifest second-brain.toml sync --dry-run
-hermes-second-brain --manifest second-brain.toml sync
+hermes-second-brain --manifest second-brain.toml sync --apply
 ```
 
-`sync --dry-run` initializes local SQLite state and reports what would change without invoking OpenViking. Plain `sync` creates or replaces deterministic resources beneath `viking://resources/second-brain/` with the official CLI:
+`sync` is dry-run by default: it initializes local SQLite state and reports what would change without invoking OpenViking. Only `sync --apply` creates or replaces deterministic resources beneath `viking://resources/second-brain/` with the official CLI:
 
 ```bash
-ov add-resource <redacted-temporary-summary> --to <deterministic-uri>
+ov add-resource <limited-temporary-excerpt> --to <deterministic-uri>
 ```
 
 For an existing resource it uses `ov write --from-file` instead. Override `openviking.command` in the manifest if your local OpenViking wrapper uses a different executable name.
@@ -46,4 +48,5 @@ For an existing resource it uses `ov write --from-file` instead. Override `openv
 - Keep raw notes, inboxes, chat exports, and state databases outside git.
 - Commit only example manifests with placeholder paths.
 - The scanner skips secret-looking paths such as `.env`, token files, credential files, private keys, SQLite databases, JSONL logs, virtualenvs, caches, and build output.
+- It does **not** guarantee removal of every secret or piece of PII found in ordinary note content or titles; approve and review content before `--apply`.
 - If a production integration assumes personal accounts, device paths, labels, or launch agents, leave it out of this public starter and document the generic extension point instead.

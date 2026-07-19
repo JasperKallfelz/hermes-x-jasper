@@ -1,4 +1,4 @@
-"""Command line interface for the public-safe Second Brain module."""
+"""Command line interface for the repository-safe local Second Brain module."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from .manifest import load_manifest
 from .scanner import scan_roots
 from .sync import sync_manifest
 
-EXAMPLE_MANIFEST = """# Public-safe Second Brain manifest.
-# Raw files stay local. Sync exports redacted summaries only.
+EXAMPLE_MANIFEST = """# Local Second Brain manifest.
+# Raw files stay local. Sync sends limited excerpts from explicitly approved files.
+# Basic redaction is not a guarantee that all PII or secrets are removed.
 state_path = ".second-brain/state.sqlite3"
 
 [openviking]
@@ -56,8 +57,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def _cmd_sync(args: argparse.Namespace) -> int:
     manifest = load_manifest(args.manifest)
-    plan = sync_manifest(manifest, dry_run=args.dry_run)
-    mode = "dry-run" if args.dry_run else "export"
+    plan = sync_manifest(manifest, dry_run=not args.apply)
+    mode = "export" if args.apply else "dry-run"
     print(f"{mode}: scanned={plan.scanned} changed={len(plan.changed)} command={shutil.which(plan.export.command[0]) or plan.export.command[0]}")
     return 0
 
@@ -76,9 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--manifest", default=argparse.SUPPRESS, help="Path to the local manifest")
     scan.set_defaults(func=_cmd_scan)
 
-    sync = sub.add_parser("sync", help="Sync redacted summaries to an OpenViking CLI")
+    sync = sub.add_parser("sync", help="Preview or explicitly export approved local excerpts")
     sync.add_argument("--manifest", default=argparse.SUPPRESS, help="Path to the local manifest")
-    sync.add_argument("--dry-run", action="store_true", default=False, help="Do not invoke OpenViking")
+    sync.add_argument("--apply", action="store_true", help="Actually invoke the configured OpenViking CLI")
+    sync.add_argument("--dry-run", action="store_true", help="Explicitly preview only (the default)")
     sync.set_defaults(func=_cmd_sync)
     return parser
 

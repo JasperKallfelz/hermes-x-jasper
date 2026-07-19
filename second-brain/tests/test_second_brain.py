@@ -130,12 +130,14 @@ def test_jsonl_contains_approved_summary_records(tmp_path: Path):
     assert record["metadata"]["root"] == "notes"
 
 
-def test_cli_init_scan_and_dry_run(tmp_path: Path, monkeypatch):
+def test_cli_init_scan_and_dry_run(tmp_path: Path, monkeypatch, capsys):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
         assert main(["init", "--manifest", "second-brain.toml"]) == 0
         assert main(["--manifest", "second-brain.toml", "scan"]) == 0
+        assert main(["--manifest", "second-brain.toml", "sync"]) == 0
+        assert "dry-run:" in capsys.readouterr().out
         assert main(["--manifest", "second-brain.toml", "sync", "--dry-run"]) == 0
     finally:
         os.chdir(cwd)

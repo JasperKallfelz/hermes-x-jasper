@@ -25,7 +25,7 @@ A one-command setup for a **personalised [Hermes Agent](https://github.com/NousR
 | **Streaming STT** | Keeps Parakeet (MLX) loaded for incremental transcripts — Apple Silicon only, off by default | **patch** |
 | **Voice jobs / orchestration** | Long voice requests become detached background agents instead of blocking the call | **patch** |
 | **JARVIS-style voice** | Edge TTS + an ffmpeg filter chain for a filtered assistant voice | script |
-| **Local Second Brain starter** | Optional approved-root scanner, SQLite state, dry-run sync, and OpenViking CLI export of redacted summaries | module |
+| **Local Second Brain starter** | Optional approved-root scanner, SQLite state, dry-run sync, and explicit OpenViking CLI export of approved excerpts | module |
 
 "patch" = added by `patches/voice-and-desktop-features.patch`. "script" = `scripts/`.
 "module" = the independent `second-brain/` Python package in this repo.
@@ -188,7 +188,7 @@ The merge is `yaml.safe_load` only, writes atomically, and always backs up first
 
 ## Optional Local Second Brain
 
-This repo includes a public-safe Second Brain helper at [second-brain/README.md](second-brain/README.md). It is not a bundled Hermes plugin and does not run automatically. Treat it as a local CLI you can install beside Hermes.
+This repo includes a public-repository-safe Second Brain helper at [second-brain/README.md](second-brain/README.md). It is not a bundled Hermes plugin and does not run automatically. Treat it as a local CLI you can install beside Hermes.
 
 Install and test it:
 
@@ -215,7 +215,7 @@ Use it:
 ```bash
 hermes-second-brain --manifest second-brain.toml scan
 hermes-second-brain --manifest second-brain.toml sync --dry-run
-hermes-second-brain --manifest second-brain.toml sync
+hermes-second-brain --manifest second-brain.toml sync --apply
 ```
 
 Safe boundaries:
@@ -223,7 +223,8 @@ Safe boundaries:
 - Raw notes, inboxes, chat exports, and SQLite state stay local and ignored by git.
 - Only files under manifest `[[approved_roots]]` are scanned.
 - Secret-looking paths, virtualenvs, caches, build output, SQLite databases, JSONL logs, `.env` files, tokens, credentials, and private keys are skipped.
-- OpenViking receives only approved, redacted summaries through the local `ov add-resource` / `ov write` commands.
+- `sync` is preview-only by default; only `sync --apply` invokes `ov add-resource` / `ov write`.
+- The module performs basic redaction only; it is not a guarantee against secrets or PII in ordinary note content. Approve roots and inspect the scan before `--apply`.
 - Production manifests, scheduler labels, account IDs, personal paths, and private integration glue are intentionally omitted. Add them only in private local config.
 
 ---
