@@ -43,7 +43,7 @@ macOS: `brew install python@3.11`. Debian/Ubuntu: `sudo apt install python3.11 p
 
 ### The upstream installer fails
 
-`setup.sh` delegates to upstream's `setup-hermes.sh` on purpose — it owns the venv and the dependency set. If it fails, run it directly to see the real error:
+`setup.sh` delegates to upstream's `setup-hermes.sh` on purpose — it owns `venv/bin/hermes`, the venv and the dependency set. Re-runs skip this step once `~/hermes-agent/venv/bin/hermes` exists. If the first install fails, run it directly to see the real error:
 
 ```bash
 cd ~/hermes-agent && bash setup-hermes.sh
@@ -58,7 +58,7 @@ A warning, not a failure — the install continues. Voice needs `ffmpeg` present
 ```bash
 brew install ffmpeg          # macOS
 sudo apt install ffmpeg      # Debian/Ubuntu
-~/hermes-agent/.venv/bin/pip install edge-tts faster-whisper langid
+~/hermes-agent/venv/bin/pip install edge-tts faster-whisper langid
 ```
 
 If you do not want voice at all: `./setup.sh --skip-voice`.
@@ -100,36 +100,13 @@ Your `config.yaml` is malformed (or is a list). `merge_config.py` refuses to tou
 
 ---
 
-## Telegram / Discord
+## Telegram
 
 ### The bot ignores me
 
-Almost always the allowlist. Your numeric id must be in `TELEGRAM_ALLOWED_USERS` / `DISCORD_ALLOWED_USERS` in `~/.hermes/.env`. Get it from [@userinfobot](https://t.me/userinfobot) (Telegram) or by right-clicking yourself with Developer Mode on (Discord).
+Almost always the allowlist. Your numeric id must be in `TELEGRAM_ALLOWED_USERS` in `~/.hermes/.env`. Get it from [@userinfobot](https://t.me/userinfobot).
 
 If the allowlist is *empty*, fix that immediately — that is not "the bot is broken", that is "anyone can use your agent". See [SECURITY.md](../SECURITY.md).
-
-### Discord: `PrivilegedIntentsRequired` on startup
-
-The bot lacks its privileged intents. Discord Developer Portal → your app → **Bot** → **Privileged Gateway Intents** → enable **MESSAGE CONTENT** and **SERVER MEMBERS** → restart.
-
-### Discord: the bot reads text but not voice
-
-Voice needs `ffmpeg` and the *Connect* + *Speak* permissions in the channel. Also confirm `discord.voice_fx.enabled: true` and that the patch is applied — without it there is no voice pipeline at all.
-
-### Discord: it joins the channel but never hears me
-
-The gateway is not receiving audio (a Discord-side or network issue, usually), or every utterance is being discarded as too short. Turn up the logs and look for `Voice RTP packet` / `Voice decoded audio` lines:
-
-- No RTP packets at all → Discord is not delivering UDP audio. Check firewall/VPN.
-- Packets, but `unmapped ssrc` → the speaker could not be resolved to a user; usually fixed by leaving and rejoining the channel.
-
-### It interrupts itself constantly / never lets me interrupt
-
-Barge-in sensitivity. Raise `barge_in_min_ms` (e.g. `600`) if background noise keeps cutting the bot off; lower it (e.g. `200`) if talking over it does nothing.
-
-### It cuts me off mid-sentence
-
-Raise `streaming_stt_endpoint_silence` (e.g. `0.8`) — that is how long a pause has to be before your turn counts as finished.
 
 ---
 
@@ -148,17 +125,13 @@ echo "Systems online." > /tmp/in.txt
 python3 scripts/jarvis_style_tts.py /tmp/in.txt /tmp/out.mp3
 ```
 
-### Streaming STT stays off
-
-It requires `parakeet-mlx`, which requires Apple Silicon. On Intel Macs and Linux it will not install and Hermes falls back to the file-based `stt.provider` — that is the intended behaviour, not a bug. Verify: `~/hermes-agent/.venv/bin/pip show parakeet-mlx`.
-
 ---
 
 ## Publishing a fork
 
 ### `audit_public found something`
 
-It prints `file:line: [rule] message` for every hit. Real secret? Remove it, **rotate it**, and rewrite the history if it was ever committed. Genuine false positive? Add an `audit:allow` marker to that line, or use a clearer placeholder (`<YOUR_TOKEN>`, `user@example.com`, `~/path`).
+It prints `file:line: [rule] message` for every hit and never prints the matched secret value. Real secret? Remove it, **rotate it**, and rewrite the history if it was ever committed. Genuine false positive? Add an `audit:allow` marker to that line, or use a clearer placeholder (`<YOUR_TOKEN>`, `user@example.com`, `~/path`). Whole-file `audit:allow-file` bypasses are unsupported.
 
 Add your own strings to catch:
 

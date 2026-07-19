@@ -4,9 +4,9 @@ Two things matter equally: it must catch real leaks, and it must NOT cry wolf
 on the placeholders a starter repo is made of. A scanner that flags .env.example
 gets switched off, and then it catches nothing at all.
 
-The credentials below are invented fixtures, not real keys. This file carries an
-audit:allow-file marker so the scanner skips it — otherwise it would flag its own
-test data. Every value here is randomly typed and belongs to no account.
+The credentials below are invented fixtures, not real keys. The legacy
+`audit:allow-file` text is tested below; whole-file skipping is unsupported.
+Every value here is randomly typed and belongs to no account.
 """
 import subprocess
 import sys
@@ -26,27 +26,27 @@ def rules(text, denylist=()):
 
 class TestCatchesRealLeaks(unittest.TestCase):
     def test_private_key(self):
-        self.assertIn("private-key", rules("-----BEGIN OPENSSH PRIVATE KEY-----"))
+        self.assertIn("private-key", rules("-----BEGIN OPENSSH PRIVATE KEY-----"))  # audit:allow
 
     def test_openai_style_key(self):
-        self.assertIn("openai-key", rules("OPENAI_API_KEY=sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1xYz4B7c0D"))
+        self.assertIn("openai-key", rules("OPENAI_API_KEY=sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1xYz4B7c0D"))  # audit:allow
 
     def test_github_token(self):
-        self.assertIn("github-token", rules("token: ghp_9sKq2Wm4Rt7Yv1Bn6Xz3Cd8Ef5Gh0Jk2Lp4"))
+        self.assertIn("github-token", rules("token: ghp_9sKq2Wm4Rt7Yv1Bn6Xz3Cd8Ef5Gh0Jk2Lp4"))  # audit:allow
 
     def test_google_key(self):
-        self.assertIn("google-key", rules("key=AIzaSyD3Kf9Lm2Pq7Rt4Wv8Xz1Cb6Nh5Jg0Ye3"))
+        self.assertIn("google-key", rules("key=AIzaSyD3Kf9Lm2Pq7Rt4Wv8Xz1Cb6Nh5Jg0Ye3"))  # audit:allow
 
     def test_telegram_bot_token(self):
         self.assertIn(
             "telegram-bot-token",
-            rules("TELEGRAM_BOT_TOKEN=7284910356:AAF9kQ2mVx7Rp3Tz8Wn1Yb5Cd6Eg0Hj4Lk2"),
+            rules("TELEGRAM_BOT_TOKEN=7284910356:AAF9kQ2mVx7Rp3Tz8Wn1Yb5Cd6Eg0Hj4Lk2"),  # audit:allow
         )
 
     def test_authorization_header(self):
         self.assertIn(
             "authorization-header",
-            rules('headers = {"Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGc"}'),
+            rules('headers = {"Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGc"}'),  # audit:allow
         )
 
     def test_macos_home_path(self):
@@ -58,13 +58,13 @@ class TestCatchesRealLeaks(unittest.TestCase):
         self.assertIn("linux-home", rules(f"log: {path}"))
 
     def test_real_email(self):
-        self.assertIn("email", rules("contact: account@company.co"))
+        self.assertIn("email", rules("contact: account@company.co"))  # audit:allow
 
     def test_discord_snowflake(self):
-        self.assertIn("discord-snowflake", rules("guild_id = 934721085463920174"))
+        self.assertIn("discord-snowflake", rules("guild_id = 934721085463920174"))  # audit:allow
 
     def test_telegram_group_id(self):
-        self.assertIn("telegram-group-id", rules("chat_id: -1001938475620"))
+        self.assertIn("telegram-group-id", rules("chat_id: -1001938475620"))  # audit:allow
 
     def test_denylist_hits(self):
         found = rules("the maintainer is InternalCodeName", denylist=["internalcodename"])
@@ -109,7 +109,7 @@ class TestFileWalk(unittest.TestCase):
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / ".git").mkdir()
-            (root / ".git" / "config").write_text("url = git@github.com:someone/x.git\n")
+            (root / ".git" / "config").write_text("url = git@github.com:someone/x.git\n")  # audit:allow
             (root / "linked-worktree.git").write_text("gitdir: /local/metadata\n")
             (root / "ok.txt").write_text("hello\n")
             names = [p.name for p in audit_public.iter_files(root, tracked_only=False)]
@@ -118,7 +118,7 @@ class TestFileWalk(unittest.TestCase):
     def test_skips_binary_files(self):
         with TemporaryDirectory() as td:
             blob = Path(td) / "data.dat"
-            blob.write_bytes(b"\x00\x01secret sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1")
+            blob.write_bytes(b"\x00\x01secret sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1")  # audit:allow
             self.assertIsNone(audit_public.read_text(blob))
 
 
@@ -155,7 +155,7 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_exits_nonzero_on_leak(self):
         with TemporaryDirectory() as td:
-            (Path(td) / "leak.py").write_text('KEY = "ghp_9sKq2Wm4Rt7Yv1Bn6Xz3Cd8Ef5Gh0Jk2Lp4"\n')
+            (Path(td) / "leak.py").write_text('KEY = "ghp_9sKq2Wm4Rt7Yv1Bn6Xz3Cd8Ef5Gh0Jk2Lp4"\n')  # audit:allow
             proc = subprocess.run(
                 [sys.executable, str(REPO / "scripts" / "audit_public.py"), td],
                 capture_output=True, text=True,

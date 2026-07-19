@@ -51,7 +51,7 @@ make audit          # or: python3 scripts/audit_public.py .
 PUBLIC_AUDIT_DENYLIST="my-real-name,my-server.example" make audit
 ```
 
-It runs in CI on every push. Two escape hatches exist and both are deliberate: an `audit:allow` marker skips a line, and `audit:allow-file` skips a whole file (used by the test fixtures, which must contain realistic-looking fake keys). Do not reach for either to silence a genuine finding.
+It runs in CI on every push. The only escape hatch is an `audit:allow` marker on one line. Whole-file `audit:allow-file` bypasses are deliberately unsupported. Do not use a marker to silence a genuine finding.
 
 ## Reporting a vulnerability
 

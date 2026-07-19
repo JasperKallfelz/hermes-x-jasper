@@ -10,7 +10,7 @@ Exits non-zero when anything is found, so it can gate CI and `make check`.
 Placeholders are expected in a starter repo: a line is only reported when it
 looks like a *real* value. Lines carrying the ``audit:allow`` marker are skipped
 (same idea as ``# noqa``) — that is how this file declares its own patterns
-without matching itself.
+without matching itself. There is intentionally no whole-file audit bypass.
 
 Extra project-specific strings can be supplied via PUBLIC_AUDIT_DENYLIST, which
 is either a path to a newline-separated file or a comma-separated list:
@@ -30,8 +30,7 @@ from pathlib import Path
 from typing import Iterable, NamedTuple
 
 ALLOW_MARKER = "audit:allow"
-# A file containing this marker is skipped entirely — for test fixtures, which
-# must contain realistic-looking secrets in order to prove the scanner works.
+# Retained only to detect and reject a legacy whole-file bypass marker.
 ALLOW_FILE_MARKER = "audit:allow-file"
 
 SKIP_DIRS = {
@@ -233,6 +232,12 @@ def read_text(path: Path) -> str | None:
         return None
 
 
+def allow_file_marker_applies(path: Path, root: Path, text: str) -> bool:
+    """Whole-file audit bypasses are deliberately unsupported."""
+    del path, root, text
+    return False
+
+
 def scan_history(root: Path, denylist: Iterable[str]) -> int:
     """Scan reachable git blobs without printing matched values."""
     if not _is_git_worktree(root):
@@ -258,7 +263,7 @@ def scan_history(root: Path, denylist: Iterable[str]) -> int:
         cat = _git(root, ["cat-file", "-p", blob])
         if cat.returncode != 0 or "\x00" in cat.stdout:
             continue
-        if ALLOW_FILE_MARKER in cat.stdout:
+        if allow_file_marker_applies(Path(name), Path("."), cat.stdout):
             continue
         for lineno, rule, message in scan_text(cat.stdout, denylist):
             print(f"history:{name}:{lineno}: [{rule}] {message}")
@@ -277,7 +282,7 @@ def main(argv: list[str]) -> int:
     total = 0
     for path in iter_files(root, tracked_only=tracked_only):
         text = read_text(path)
-        if text is None or ALLOW_FILE_MARKER in text:
+        if text is None or allow_file_marker_applies(path, root, text):
             continue
         for lineno, rule, message in scan_text(text, denylist):
             rel = path.relative_to(root) if path.is_relative_to(root) else path

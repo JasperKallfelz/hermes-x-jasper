@@ -94,8 +94,7 @@ tts:
       voice_compatible: true     # allow delivery as a Telegram voice bubble
 
 # STT for inbound voice messages. Upstream supports local faster-whisper and a
-# few cloud providers; there is no command-provider hook for STT, so the local
-# Parakeet path is wired through the Discord streaming STT below instead.
+# few cloud providers; there is no command-provider hook for STT.
 stt:
   enabled: true
   provider: local                # local | openai | groq | mistral | elevenlabs
@@ -106,34 +105,3 @@ stt:
 voice:
   auto_tts: false
   max_recording_seconds: 120
-
-# ---------------------------------------------------------------------------
-# Discord voice [patch]
-# ---------------------------------------------------------------------------
-# Everything under voice_fx beyond the stock gains is added by this starter's
-# patch: a live audio mixer, spoken acknowledgements, barge-in, and an optional
-# always-loaded local Parakeet (MLX, Apple Silicon) for incremental transcripts.
-discord:
-  voice_fx:
-    enabled: true
-    ambient_enabled: false
-    ambient_gain: 0.18
-    duck_gain: 0.06
-    speech_gain: 1.0
-    ack_enabled: true            # speak a short phrase before the first tool call
-
-    join_greeting_enabled: true  # [patch] greet an allowed user joining the channel
-    join_greeting_phrases:       # [patch] pick your own; keep them short
-      - "Hey, I'm here."
-      - "Hello, ready when you are."
-      - "Welcome back."
-
-    barge_in_enabled: true       # [patch] talking over the bot interrupts it
-    barge_in_min_ms: 320         # [patch] ignore coughs/backchannel noise
-
-    # [patch] Local streaming STT. Requires parakeet-mlx (Apple Silicon).
-    # Off by default: without it Hermes uses the file-based stt.provider above.
-    streaming_stt_enabled: false
-    streaming_stt_model: "mlx-community/parakeet-tdt-0.6b-v3"
-    streaming_stt_endpoint_silence: 0.45
-    streaming_stt_chunk_ms: 500

@@ -135,63 +135,16 @@ stt:
 
 `local` runs faster-whisper on your machine — free, private, no API key. Bigger models are more accurate and slower.
 
-> Upstream has **no** command-provider hook for STT (unlike TTS). `scripts/parakeet_stt_limited.py` therefore is not wired in through config: it is a standalone helper you can call directly, and the Parakeet path proper is the Discord streaming STT below. The script transcribes with Parakeet MLX, then guards the result — if the transcript comes back in a language that is neither German nor English, it re-runs faster-whisper with the language pinned and picks the more plausible output.
+> Upstream has **no** command-provider hook for STT (unlike TTS). `scripts/parakeet_stt_limited.py` therefore is not wired in through config: it is a standalone helper you can call directly. It transcribes with Parakeet MLX, then guards the result — if the transcript comes back in a language that is neither German nor English, it re-runs faster-whisper with the language pinned and picks the more plausible output.
 
 ---
 
-## Discord voice **\[patch\]**
+## Discord voice — parked
 
-This is the bulk of the patch: a Discord bot you talk to like a phone call rather than a chatbot.
-
-```yaml
-discord:
-  voice_fx:
-    enabled: true
-    ack_enabled: true            # speak before the first tool call
-    ambient_enabled: false
-    ambient_gain: 0.18
-    duck_gain: 0.06
-    speech_gain: 1.0
-
-    join_greeting_enabled: true  # [patch]
-    join_greeting_phrases:       # [patch]
-      - "Hey, I'm here."
-      - "Hello, ready when you are."
-      - "Welcome back."
-
-    barge_in_enabled: true       # [patch]
-    barge_in_min_ms: 320         # [patch]
-```
-
-**Continuous mixer.** Instead of playing one clip at a time, the patch keeps a mixer running on the voice connection. That is what makes ambient beds, ducking and interruption possible at all.
-
-**Acknowledgements** (`ack_enabled`). The agent says something short — "let me look that up" — before its first tool call, so a ten-second pause does not feel like a dropped call. There is also a quiet "work bed" under long turns, mixed locally and stopped before the reply.
-
-**Barge-in** (`barge_in_enabled`). Start talking while the bot is talking and it stops. `barge_in_min_ms: 320` is the guard against coughs, keyboard noise and "mhm" backchannels triggering it — lower it if it feels unresponsive, raise it if it cuts out for nothing.
-
-**Join greeting.** When an *allowed* user joins the bot's channel, it says one of `join_greeting_phrases`. Set your own. They are spoken through the configured TTS voice, so keep them short and write them in whatever language your voice speaks.
-
-**Voice commands.** Spoken shortcuts, recognised in German and English: *new chat* / *neuer Chat*, *stop* / *stopp*, *agent status*, *voice commands* / *Sprachbefehle*.
-
-**Voice jobs.** A long request ("go build X and test it") does not block the call. It becomes a detached background agent; the call stays responsive, and *agent status* tells you where things are.
-
-### Streaming STT **\[patch\]** — Apple Silicon only
-
-```yaml
-    streaming_stt_enabled: false
-    streaming_stt_model: "mlx-community/parakeet-tdt-0.6b-v3"
-    streaming_stt_endpoint_silence: 0.45
-    streaming_stt_chunk_ms: 500
-```
-
-Off by default. When on, Hermes keeps a Parakeet MLX model resident and decodes Discord audio **incrementally**, instead of writing a WAV at the end of each utterance and shipping it to a file-based STT provider. The result is a noticeably shorter gap between you finishing a sentence and the agent starting to think.
-
-Needs `parakeet-mlx`, which needs Apple Silicon (`setup.sh` installs it there automatically). On any other machine, leave it off — Hermes falls back to the file-based `stt.provider` with no complaints.
-
-`streaming_stt_endpoint_silence` is how long a pause has to be before your turn is considered finished. Raise it if you get cut off mid-thought; lower it if the bot is slow to react.
+The Discord voice stack (continuous mixer, barge-in, join greetings, voice jobs, streaming STT) has been split out of the main patch and is not currently shipped in this starter. It will return as a separate patch once stabilised.
 
 ---
 
 ## Turning things off
 
-Everything here degrades cleanly. `voice_fx.enabled: false` gives you a text-only Discord bot. `streaming.enabled: false` gives you block replies. Removing `browser.cdp_url` gives you the stock headless browser. Nothing in the patch is load-bearing for the rest of Hermes.
+Everything here degrades cleanly. `streaming.enabled: false` gives you block replies. Removing `browser.cdp_url` gives you the stock headless browser. Nothing in the patch is load-bearing for the rest of Hermes.

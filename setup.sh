@@ -61,6 +61,7 @@ done
 
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 HERMES_HOME="${HERMES_HOME/#\~/$HOME}"
+HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
 
 echo
 info "Hermes CLI Starter"
@@ -68,6 +69,7 @@ echo "  upstream    : $UPSTREAM_REPO"
 echo "  commit      : $PINNED_COMMIT"
 echo "  install dir : $INSTALL_DIR"
 echo "  hermes home : $HERMES_HOME"
+echo "  executable  : $HERMES_BIN"
 [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
 echo
 
@@ -127,24 +129,33 @@ elif git -C "$INSTALL_DIR" apply --reverse --check "$PATCH_FILE" 2>/dev/null; th
 elif git -C "$INSTALL_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
   git -C "$INSTALL_DIR" apply "$PATCH_FILE"
   ok "patch applied"
+elif git -C "$INSTALL_DIR" apply --3way "$PATCH_FILE" 2>/dev/null; then
+  # Plain apply did not fit, but a 3-way merge against the blobs recorded in
+  # the patch resolved the drift cleanly.
+  ok "patch applied (3-way merge)"
 else
-  die "patch does not apply to $INSTALL_DIR. Is the checkout at $PINNED_COMMIT and clean?
-     Inspect with: git -C '$INSTALL_DIR' apply --check -v '$PATCH_FILE'"
+  die "patch does not apply to $INSTALL_DIR, even with a 3-way merge. Is the checkout at $PINNED_COMMIT and clean?
+     Inspect with: git -C '$INSTALL_DIR' apply --3way -v '$PATCH_FILE'
+     If conflict markers were left behind: git -C '$INSTALL_DIR' checkout -- ."
 fi
 
 # --- 4. upstream install ---------------------------------------------------
-# setup-hermes.sh is upstream's own installer: it creates the venv (uv, or
-# stdlib venv on Termux), installs dependencies, seeds .env from the template
-# and links the `hermes` CLI. We deliberately do not reimplement any of it.
-info "Running upstream installer (setup-hermes.sh)"
-if [ -x "$INSTALL_DIR/setup-hermes.sh" ]; then
+# setup-hermes.sh is upstream's own installer: it creates venv/bin/hermes
+# plus the venv/dependencies and seeds its own template files. We deliberately
+# do not reimplement any of it, but a present executable means this step's end
+# state already exists and a re-run can leave it alone.
+info "Checking upstream installer state"
+if [ -x "$HERMES_BIN" ]; then
+  ok "Hermes executable already exists: $HERMES_BIN — skipping upstream installer"
+elif [ -x "$INSTALL_DIR/setup-hermes.sh" ]; then
+  info "Running upstream installer (setup-hermes.sh)"
   run bash "$INSTALL_DIR/setup-hermes.sh"
   ok "upstream installer finished"
 else
   warn "setup-hermes.sh not found — falling back to a plain venv + editable install"
-  run python3 -m venv "$INSTALL_DIR/.venv"
-  run "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
-  run "$INSTALL_DIR/.venv/bin/pip" install --quiet -e "$INSTALL_DIR"
+  run python3 -m venv "$INSTALL_DIR/venv"
+  run "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
+  run "$INSTALL_DIR/venv/bin/pip" install --quiet -e "$INSTALL_DIR"
 fi
 
 # --- 5. optional voice dependencies ---------------------------------------
@@ -152,7 +163,7 @@ if [ "$SKIP_VOICE" -eq 1 ]; then
   info "Skipping voice dependencies (--skip-voice)"
 else
   info "Installing optional voice dependencies"
-  PIP="$INSTALL_DIR/.venv/bin/pip"
+  PIP="$INSTALL_DIR/venv/bin/pip"
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "  would install: edge-tts, faster-whisper, langid (+ parakeet-mlx on Apple Silicon)"
   elif [ -x "$PIP" ]; then
@@ -162,8 +173,8 @@ else
       || warn "voice deps failed to install — TTS/STT scripts may not run"
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
       "$PIP" install --quiet parakeet-mlx \
-        && ok "parakeet-mlx (Apple Silicon streaming STT)" \
-        || warn "parakeet-mlx not installed — streaming STT stays off"
+        && ok "parakeet-mlx (Apple Silicon local STT for scripts/parakeet_stt_limited.py)" \
+        || warn "parakeet-mlx not installed — the local Parakeet STT helper will not run"
     fi
   else
     warn "no venv at $PIP — skipping voice deps"
@@ -211,7 +222,7 @@ Next steps:
   1. Put your API keys in $ENV_TARGET  (never commit this file)
   2. Set your Telegram/Discord allowlist in the same file — an agent with no
      allowlist will talk to anyone who finds it.
-  3. Start it:  cd "$INSTALL_DIR" && ./.venv/bin/hermes
+  3. Start it:  $HERMES_BIN
 
 Docs: $STARTER_DIR/README.md · $STARTER_DIR/docs/TROUBLESHOOTING.md
 EOF
