@@ -1,4 +1,7 @@
-# Hermes CLI Starter
+# Hermes CLI Starter `alpha`
+
+> [!WARNING]
+> **Alpha.** This starter is under active development and not yet stable. Interfaces, the feature patch, and the config layout may change without notice. Expect rough edges — pin what you depend on.
 
 A one-command setup for a **personalised [Hermes Agent](https://github.com/NousResearch/hermes-agent)**: persistent memory, subagent delegation, a browser that drives your *real* Chrome, code execution, streaming replies, and polished Telegram + TTS voice ergonomics.
 
@@ -28,7 +31,7 @@ A one-command setup for a **personalised [Hermes Agent](https://github.com/NousR
 "module" = the independent `second-brain/` Python package in this repo.
 
 > [!NOTE]
-> The Discord voice stack (voice mixer, barge-in, join greeting, streaming STT, voice jobs) has been split out of the main patch and is **not currently shipped** here. It lives in a separate parked patch and will return once it is stabilised.
+> The Discord voice stack (voice mixer, barge-in, join greeting, streaming STT, voice jobs) has been split out of the main patch and is **not currently shipped** here. It is being rearchitected (isolated Node media gateway) and will return once it is stable.
 
 ---
 
