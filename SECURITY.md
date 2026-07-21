@@ -61,4 +61,4 @@ It runs in CI on every push. The only escape hatch is an `audit:allow` marker on
 
 ## Supply chain
 
-`setup.sh` pins upstream to a single reviewed commit (`b56aafc2ef6befd96ecf00bf4788031cf4be169b`) rather than tracking a branch, so what you install is what was tested. It runs upstream's own installer, which pulls dependencies from PyPI. Read the patch before you apply it — `git apply --check` tells you it *fits*, not that it is *safe*. That part is on you, as it should be with any code you find on the internet.
+`setup.sh` pins upstream to a single reviewed commit (`3ef6bbd201263d354fd83ec55b3c306ded2eb72a`, Hermes Agent v0.19.0) rather than tracking a branch, so what you install is what was tested. It runs upstream's own installer, which pulls dependencies from PyPI. Read the patch before you apply it — `git apply --check` tells you it *fits*, not that it is *safe*. That part is on you, as it should be with any code you find on the internet.

@@ -24,15 +24,10 @@ memory:
   write_approval: false          # true = every memory write asks first
   provider: ""                   # "" | holographic | mem0 | hindsight | openviking | retaindb
 
-# Optional local Second Brain starter included in ./second-brain.
-# This is a config overlay only. It does not claim a Hermes plugin exists; run
-# the helper CLI yourself or from your own local scheduler.
-second_brain:
-  enabled: false
-  manifest: "~/second-brain.toml"
-  raw_data_policy: "local-only"
-  export_policy: "approved-redacted-summaries"
-  sync_command: "hermes-second-brain --manifest ~/second-brain.toml sync --dry-run"
+# NOTE: the optional local Second Brain starter is NOT configured here. It is
+# not an upstream Hermes config section, and v0.19 does not retain unknown
+# top-level keys (`hermes config migrate` drops them). Configure and run it from
+# its own manifest instead — see ./second-brain/README.md.
 
 # Context engine. "compressor" is the built-in lossy summarizer; "lcm" is
 # Lossless Context Management and must be installed as a context_engine plugin.
@@ -40,14 +35,19 @@ context:
   engine: compressor             # compressor | lcm
 
 # Subagent delegation — let delegate_task run children on a cheaper/faster model.
-# Empty values inherit the parent agent's provider and credentials.
+# Empty values inherit the parent agent's provider and credentials. The limits
+# below are the current safe orchestration defaults: wider fan-out and a little
+# more depth, with human approval still required for irreversible actions.
 delegation:
   orchestrator_enabled: true
   model: ""                      # e.g. "google/gemini-3-flash-preview"
   provider: ""                   # e.g. "openrouter"
-  max_concurrent_children: 3
-  max_async_children: 3
-  max_spawn_depth: 1
+  # In v0.19 this is the single, unified concurrency cap: it bounds BOTH parallel
+  # children per batch AND concurrent background delegation units. It replaces the
+  # old, now-deprecated delegation.max_async_children (dropped by `hermes config
+  # migrate`); do not add a separate async limit here.
+  max_concurrent_children: 8
+  max_spawn_depth: 3             # how many levels deep a child may itself delegate (range 1-3)
   subagent_auto_approve: false   # keep human approval in the loop
 
 # Browser. Pointing cdp_url at a loopback DevTools endpoint makes Hermes drive
@@ -61,10 +61,16 @@ browser:
   command_timeout: 30
 
 # execute_code sandbox: tool results stay out of the context window.
+# execute_code is for SHORT multi-tool Python orchestration only. Long-running
+# work (AI coding CLIs, training, large builds, full test suites, build/test/fix
+# loops) belongs in terminal(background=true, notify_on_complete=true) with
+# process tracking — see AGENTS.md. `timeout` stays a short-orchestration
+# guardrail; a single long test gate gets a larger gate timeout in the runner
+# instead of raising this.
 code_execution:
-  mode: project                  # project | none
-  timeout: 300
-  max_tool_calls: 50
+  mode: project                  # project | strict  (v0.19 accepts only these two)
+  timeout: 300                   # seconds; short-orchestration guardrail, not a build budget
+  max_tool_calls: 1000
 
 # Token-by-token replies on chat platforms.
 streaming:
@@ -88,7 +94,7 @@ tts:
       type: command
       # {input_path} and {output_path} are substituted by Hermes.
       # Use an absolute path if you cloned this starter somewhere else.
-      command: "python3 ~/hermes-cli-starter/scripts/jarvis_style_tts.py {input_path} {output_path}"
+      command: "python3 ~/hermes-x-jasper/scripts/jarvis_style_tts.py {input_path} {output_path}"
       output_format: mp3
       timeout: 120
       voice_compatible: true     # allow delivery as a Telegram voice bubble

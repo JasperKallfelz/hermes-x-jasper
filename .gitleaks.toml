@@ -1,0 +1,59 @@
+# Gitleaks configuration for the Hermes CLI Starter public release gate.
+#
+# Policy
+# ------
+# Extend the FULL default ruleset (nothing is disabled) and add ONLY narrow,
+# rule-bound, commit+path-scoped allowlists for a fixed set of immutable
+# historical false positives. Those are deliberately-fake vectors for this repo's
+# own secret scanner (tests/test_audit_public.py) plus one prose sentence in
+# CONTRIBUTING.md that names forbidden data types.
+#
+# We deliberately do NOT use a global `[[allowlists]]` block. On gitleaks 8.30.1
+# a global allowlist hid a brand-new, same-path canary even with condition="AND".
+# Rule-bound `[[rules.allowlists]]` keep every future leak reportable — including
+# a new high-entropy token committed to one of these same files in any other
+# commit. tests/test_gitleaks_gate.py enforces that property with an adversarial
+# canary, and proves this config clears the known history.
+#
+# The current working tree contains no static secret at all (the scanner's test
+# vectors are assembled at runtime), so these allowlists only ever apply to old,
+# immutable commits — a current-tree ("dir") finding has no commit and is never
+# suppressed here.
+
+title = "hermes-cli-starter release gate"
+
+[extend]
+useDefault = true
+
+# The three commits below are the ONLY commits permitted to carry these fixtures.
+# (38c30407 = slim-patch refactor; 9c236431 = "Initial public Hermes CLI Starter";
+#  b39954ca = "Initial public Hermes friends starter".)
+
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  condition = "AND"
+  commits = [
+    "38c30407b6ed3d8de8887010c11cb68026e3392b",
+    "9c236431383c41323258188c83c178b0234516d5",
+    "b39954caad28491f391a3cff150db9da9aa7f1ef",
+  ]
+  paths = [
+    '''CONTRIBUTING\.md''',
+    '''tests/test_audit_public\.py''',
+  ]
+
+[[rules]]
+id = "telegram-bot-api-token"
+
+  [[rules.allowlists]]
+  condition = "AND"
+  commits = [
+    "38c30407b6ed3d8de8887010c11cb68026e3392b",
+    "9c236431383c41323258188c83c178b0234516d5",
+    "b39954caad28491f391a3cff150db9da9aa7f1ef",
+  ]
+  paths = [
+    '''tests/test_audit_public\.py''',
+  ]

@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for the audit + gitleaks history scans
 
       - uses: actions/setup-python@v5
         with:
@@ -30,18 +32,38 @@ jobs:
           shellcheck -S warning setup.sh verify.sh
 
       - name: Python syntax
-        run: python -m compileall -q scripts tests second-brain/src second-brain/tests
+        env:
+          PYTHONPYCACHEPREFIX: /tmp/hermes-coder-pycache
+        run: python -m compileall -q scripts tests second-brain/src second-brain/tests coder-stack/bin coder-stack/tests
 
       - name: Tests
         run: python -m pytest tests second-brain/tests -q
 
+      - name: Vendored coder-stack tests (model-free)
+        env:
+          PYTHONPYCACHEPREFIX: /tmp/hermes-coder-pycache
+        working-directory: coder-stack
+        run: python -m unittest discover -s tests -q
+
       - name: Public audit (secrets, PII, local paths)
         run: python scripts/audit_public.py . --history
+
+      - name: Install gitleaks (pinned)
+        run: |
+          set -euo pipefail
+          VERSION=8.30.1
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          test "$(gitleaks version)" = "$VERSION"
+
+      - name: Secret-scan gate (current tree + full history)
+        run: ./scripts/gitleaks_scan.sh
 
       - name: Patch applies to pinned upstream
         run: |
           set -euo pipefail
-          PINNED=b56aafc2ef6befd96ecf00bf4788031cf4be169b
+          PINNED=3ef6bbd201263d354fd83ec55b3c306ded2eb72a
           git clone --quiet https://github.com/NousResearch/hermes-agent /tmp/hermes
           git -C /tmp/hermes checkout --quiet --detach "$PINNED"
           git -C /tmp/hermes apply --check -v "$GITHUB_WORKSPACE/patches/voice-and-desktop-features.patch"

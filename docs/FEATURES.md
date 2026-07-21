@@ -37,11 +37,14 @@ delegation:
   orchestrator_enabled: true
   model: ""                     # e.g. "google/gemini-3-flash-preview"
   provider: ""                  # e.g. "openrouter"
-  max_concurrent_children: 3
+  max_concurrent_children: 8    # unified cap: parallel AND background children
+  max_spawn_depth: 3            # how deep a child may itself delegate (range 1-3)
   subagent_auto_approve: false
 ```
 
 `delegate_task` spawns subagents for parallel work. The useful trick: point `model`/`provider` at something cheap and fast, so a big model orchestrates while small models do the legwork. Empty values inherit the parent's provider and credentials.
+
+In v0.19, `max_concurrent_children` is a single cap that bounds both synchronous fan-out and concurrent background delegation; the old `max_async_children` key is gone (`hermes config migrate` folds it in). This starter ships `8` with `max_spawn_depth: 3`.
 
 Keep `subagent_auto_approve: false`. It is the difference between subagents that ask before doing something irreversible and subagents that do not.
 
@@ -66,12 +69,12 @@ Stock Hermes drives a fresh headless browser, which anti-bot systems block on si
 
 ```yaml
 code_execution:
-  mode: project    # project | none
+  mode: project    # project | strict
   timeout: 300
-  max_tool_calls: 50
+  max_tool_calls: 1000
 ```
 
-`execute_code` runs Python that calls Hermes tools over RPC. The point is context economy: intermediate tool results stay inside the script instead of being pasted into the model's context window. A 200-result search becomes one summary line. `mode: none` disables it.
+`execute_code` runs Python that calls Hermes tools over RPC. The point is context economy: intermediate tool results stay inside the script instead of being pasted into the model's context window. A 200-result search becomes one summary line. In v0.19 `mode` accepts only `project` (session cwd + active venv) or `strict` (isolated temp dir + `sys.executable`); there is no `none`. Keep `timeout` a short-orchestration guardrail — give a long test gate a larger budget in `.hermes-gates.json` instead of raising it here.
 
 ## Streaming
 

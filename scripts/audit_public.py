@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Scan tracked repository content for secrets, PII and local paths.
 
-By default, a git checkout scans tracked files only. Outside git, it falls back
-to walking the tree (skipping .git and other noise). It matches every text line
+By default, a git checkout scans tracked files plus non-ignored untracked files,
+which keeps a pre-commit release audit honest. Outside git, it falls back to
+walking the tree (skipping .git and other noise). It matches every text line
 against a set of leak patterns, and prints ``path:line: [rule] message`` for
 each hit. Messages intentionally do not echo the matched value.
 Exits non-zero when anything is found, so it can gate CI and `make check`.
@@ -196,7 +197,10 @@ def _is_git_worktree(root: Path) -> bool:
 
 def iter_files(root: Path, tracked_only: bool = True) -> Iterable[Path]:
     if tracked_only and _is_git_worktree(root):
-        proc = _git(root, ["ls-files", "-z"])
+        # Include publishable untracked content as well as index entries. This
+        # matters while a release is being assembled but before files are
+        # staged. Ignored runtime/build data remains excluded.
+        proc = _git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
         if proc.returncode == 0:
             for raw in proc.stdout.split("\0"):
                 if raw:
@@ -238,6 +242,58 @@ def allow_file_marker_applies(path: Path, root: Path, text: str) -> bool:
     return False
 
 
+def _marker_stripped_line(line: str) -> str | None:
+    """Return the exact code covered by a trailing line-scoped allow marker."""
+    marker = re.search(r"\s+(?:#|//)\s*audit:allow(?:\s|$)", line)
+    if marker is None:
+        return None
+    return line[:marker.start()].rstrip()
+
+
+def _current_history_allowances(root: Path) -> dict[str, set[str]]:
+    """Map current line-scoped allowances to identical historical lines."""
+    allowances: dict[str, set[str]] = {}
+    for path in iter_files(root):
+        text = read_text(path)
+        if text is None:
+            continue
+        relative = path.relative_to(root).as_posix()
+        for line in text.splitlines():
+            stripped = _marker_stripped_line(line)
+            if stripped is not None:
+                allowances.setdefault(relative, set()).add(stripped)
+    return allowances
+
+
+def _is_historical_self_test_fixture(path: Path, line: str, rule: str) -> bool:
+    """Recognise deliberately-fake vectors in this scanner's own self-test file.
+
+    ``tests/test_audit_public.py`` is, by construction, full of invented
+    credential vectors that exercise every rule. Older revisions wrote some of
+    them without a trailing ``# audit:allow`` marker, or split the ``rules(...)``
+    call (or the end-to-end ``leak.py`` write) onto its own line, so a history
+    scan surfaces them. Those are grandfathered here — but ONLY inside this one
+    self-test file, and ONLY on lines that are unmistakably scanner fixtures:
+    an assertion naming the rule, a bare ``rules(...)`` fixture call, or the
+    end-to-end ``leak.py`` fixture the leak test writes and then expects to be
+    caught. Every other path and line shape is still reported.
+    """
+    if path.as_posix() != "tests/test_audit_public.py":
+        return False
+    stripped = line.strip()
+    # a) single-line assertion that names the rule under test
+    quoted_rule = f'"{rule}"' in line or f"'{rule}'" in line
+    if quoted_rule and "assertIn(" in line and "rules(" in line:
+        return True
+    # b) a fixture handed straight to the scanner under test
+    if stripped.startswith("rules(") or stripped.startswith("self.assertEqual(rules("):
+        return True
+    # c) the end-to-end fixture file the leak test writes and expects to catch
+    if 'leak.py"' in line and ".write_text(" in line:
+        return True
+    return False
+
+
 def scan_history(root: Path, denylist: Iterable[str]) -> int:
     """Scan reachable git blobs without printing matched values."""
     if not _is_git_worktree(root):
@@ -252,6 +308,7 @@ def scan_history(root: Path, denylist: Iterable[str]) -> int:
         print("history:0: [git] could not enumerate history")
         return 1
 
+    current_allowances = _current_history_allowances(root)
     seen: set[str] = set()
     for line in listed.stdout.splitlines():
         if not line:
@@ -265,7 +322,14 @@ def scan_history(root: Path, denylist: Iterable[str]) -> int:
             continue
         if allow_file_marker_applies(Path(name), Path("."), cat.stdout):
             continue
+        blob_path = Path(name)
+        blob_lines = cat.stdout.splitlines()
         for lineno, rule, message in scan_text(cat.stdout, denylist):
+            source_line = blob_lines[lineno - 1].rstrip()
+            if source_line in current_allowances.get(name, set()):
+                continue
+            if _is_historical_self_test_fixture(blob_path, source_line, rule):
+                continue
             print(f"history:{name}:{lineno}: [{rule}] {message}")
             total += 1
     return total

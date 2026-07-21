@@ -1,0 +1,29 @@
+#!/bin/sh
+# The flow's bounded-output Git helper starts a new process group and binds
+# cleanup to its leader's Darwin proc identity immediately after Popen.  A
+# tiny Git can otherwise exit before Apple Python 3.9 gets scheduled again.
+#
+# Match only that helper's exact command shapes.  Keep the shell group leader
+# alive for at least one scheduling window while the real /usr/bin/git runs in
+# the same group.  Ordinary Git calls exec immediately: delaying all of them
+# consumes the vendored tests' deliberately tight wall-clock budgets.
+bounded=0
+case "$*" in
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= rev-parse HEAD"|\
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= status --porcelain=v1 -z --untracked-files=all"|\
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= diff --binary --no-ext-diff --no-textconv HEAD --"|\
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= ls-files --others --exclude-standard -z"|\
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= ls-files --others --ignored --exclude-standard -z"|\
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= show "*) bounded=1 ;;
+esac
+
+if [ "$bounded" -eq 0 ]; then
+  exec /usr/bin/git "$@"
+fi
+
+/bin/sleep 0.02 &
+identity_hold=$!
+/usr/bin/git "$@"
+git_status=$?
+wait "$identity_hold"
+exit "$git_status"

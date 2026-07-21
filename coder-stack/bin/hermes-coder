@@ -1,0 +1,2654 @@
+#!/usr/bin/env python3
+"""Run a coding CLI with bounded, classified cross-vendor fallback.
+
+The public lane, task, alias, primary-selection, and dry-run behavior predates
+the reliability layer in this file and remains intentionally stable.
+"""
+from __future__ import annotations
+
+import argparse
+import binascii
+from collections import deque
+import ctypes
+from dataclasses import dataclass
+import errno
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import time
+from typing import Any, Deque, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+import uuid
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl.
+    fcntl = None  # type: ignore
+
+
+CLAUDE_WRAPPER = os.environ.get(
+    "HERMES_CODER_CLAUDE", os.path.expanduser("~/.local/bin/claude-subscription")
+)
+CODEX_CLI = os.environ.get("HERMES_CODER_CODEX", shutil.which("codex") or "codex")
+
+# lane -> engine -> (model, effort)
+LANES = {
+    "fast": {
+        "claude": ("sonnet", "low"),
+        "codex": ("gpt-5.6-luna", "low"),
+    },
+    "normal": {
+        "claude": ("sonnet", "high"),
+        "codex": ("gpt-5.6-terra", "medium"),
+    },
+    "complex": {
+        "claude": ("opus", "xhigh"),
+        "codex": ("gpt-5.6-sol", "high"),
+    },
+    "frontier": {
+        "claude": ("fable", "high"),
+        "codex": ("gpt-5.6-sol", "max"),
+    },
+    "security": {
+        "claude": ("opus", "xhigh"),
+        "codex": ("gpt-5.6-sol", "max"),
+    },
+}
+
+LANE_ALIASES = {"easy": "fast", "heavy": "frontier"}
+LANE_CHOICES = tuple(LANES) + tuple(LANE_ALIASES)
+DEFAULT_LANE = "normal"
+ESCALATION_ORDER = ("fast", "normal", "complex", "frontier")
+
+ESCALATION_NOTICE = (
+    "One or more earlier CLI attempts on this task failed and may have left "
+    "the worktree partially changed. Inspect the current state before acting, "
+    "preserve any valid work already done, complete the task, and run the "
+    "requested verification.\n\nOriginal task:\n"
+)
+QUALITY_NOTICE = (
+    "A previous model attempt completed, but quality gate {name!r} reported "
+    "status {status!r} with exit code {exit_code}. Inspect the current "
+    "worktree, repair the implementation so every configured quality gate "
+    "passes, and run the requested verification. No gate output is included."
+    "\n\nOriginal task:\n"
+)
+READ_ONLY_TASKS = {"plan", "review", "inspect"}
+
+EXIT_QUALITY = 65
+EXIT_RECURSION = 69
+EXIT_HARNESS = 70
+EXIT_UNAVAILABLE = 75
+EXIT_TIMEOUT = 124
+EXIT_ABORT = 130
+SCHEMA_VERSION = 1
+TAIL_LIMIT = 64 * 1024
+# Native structured streams may include bounded tool and execution events, but
+# the isolated answer itself has a much smaller dedicated ceiling.  Neither
+# limit relies on the ordinary diagnostic tail, whose truncation semantics are
+# intentionally unrelated to final-answer extraction.
+FINAL_OUTPUT_LIMIT = 64 * 1024
+FINAL_NATIVE_STREAM_LIMIT = 1024 * 1024
+DEFAULT_ATTEMPT_TIMEOUT = 3600.0
+DEFAULT_WALL_TIMEOUT = 7200.0
+DEFAULT_GATE_TIMEOUT = 300.0
+DEFAULT_CIRCUIT_COOLDOWN = 1800.0
+DEFAULT_MAX_ATTEMPTS = 8
+DEFAULT_MAX_QUALITY_FAILURES = 3
+DEFAULT_JOURNAL_MAX_BYTES = 1024 * 1024
+DEFAULT_JOURNAL_BACKUPS = 3
+DEFAULT_DOCTOR_TIMEOUT = 5.0
+MAX_DOCTOR_TIMEOUT = 30.0
+RECURSION_ENV = "HERMES_CODER_ACTIVE"
+RESULT_FD_ENV = "HERMES_CODER_RESULT_FD"
+RESULT_TOKEN_ENV = "HERMES_CODER_RESULT_TOKEN"
+SHUTDOWN_FD_ENV = "HERMES_CODER_SHUTDOWN_FD"
+FLOW_RUN_ENV = "HERMES_FLOW_ACTIVE"
+FLOW_STAGE_ENV = "HERMES_FLOW_STAGE"
+RESULT_KIND = "hermes-coder-result"
+DOCTOR_KIND = "hermes-coder-doctor"
+RESULT_TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
+RUN_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+STAGE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+GIT_CONTROL_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+)
+PRIVATE_CHILD_ENV = (
+    "HERMES_CODER_LOG",
+    "HERMES_CODER_STATE",
+    RESULT_FD_ENV,
+    RESULT_TOKEN_ENV,
+    SHUTDOWN_FD_ENV,
+    "HERMES_FLOW_LOG",
+    "HERMES_FLOW_STATE_DIR",
+    "HERMES_FLOW_WORKTREE_ROOT",
+)
+JOURNAL_FIELDS = {
+    "event",
+    "run_id",
+    "ts",
+    "attempt_idx",
+    "total_attempts",
+    "lane",
+    "vendor",
+    "model",
+    "effort",
+    "task",
+    "duration_seconds",
+    "exit_code",
+    "failure_class",
+    "reason_id",
+    "final_exit_code",
+    "final_failure_class",
+    "attempts_run",
+    "starting_lane",
+    "primary",
+    "status",
+}
+
+# Contextual patterns only. In particular, bare 401 and 429 values are not
+# quota/auth evidence: they occur frequently in source code and test output.
+FAILURE_PATTERNS = (
+    (
+        "quota_usage_limit",
+        re.compile(
+            r"\b(?:usage[_-]limit[_-](?:reached|exceeded)|"
+            r"(?:claude(?: code)?|anthropic|subscription|account|plan)[^\r\n]{0,64}"
+            r"usage[ -]?limit[ -]?(?:reached|exceeded))\b",
+            re.I,
+        ),
+    ),
+    ("quota_exhausted", re.compile(r"\bquota\b[^\r\n]{0,96}\b(?:exhausted|exceeded|depleted|reached)\b", re.I)),
+    ("quota_insufficient", re.compile(r"\b(?:insufficient[_ -]?quota|credit balance[^\r\n]{0,64}(?:low|empty|exhausted)|billing[_ -]?limit)\b", re.I)),
+    ("quota_rate_limit", re.compile(r"\b(?:rate[_ -]?limit|too many requests)\b[^\r\n]{0,96}\b(?:exceeded|reached|retry|requests?)\b", re.I)),
+    ("auth_invalid_grant", re.compile(r"\binvalid[_ -]?grant\b", re.I)),
+    (
+        "auth_failed",
+        re.compile(
+            r"\b(?:oauth|api|access|refresh|bearer|account|credential)[^\r\n]{0,48}"
+            r"(?:token[^\r\n]{0,32})?(?:authentication|authorization)[^\r\n]{0,32}"
+            r"(?:failed|required|expired|invalid)\b",
+            re.I,
+        ),
+    ),
+    (
+        "auth_login_required",
+        re.compile(
+            r"\b(?:invalid (?:api[ _-]?)?key|(?:api|access|refresh|oauth) token (?:has )?expired|"
+            r"(?:claude(?: code)?|codex|openai|anthropic)[^\r\n]{0,48}(?:login|sign[ -]?in) required)\b",
+            re.I,
+        ),
+    ),
+    ("quota_wrapper_exhausted", re.compile(r"\babos? sind derzeit ausgesch", re.I)),
+)
+
+
+@dataclass(frozen=True)
+class Gate:
+    name: str
+    argv: Tuple[str, ...]
+    timeout_seconds: float
+
+
+@dataclass
+class RunResult:
+    exit_code: int
+    stdout_tail: bytes
+    stderr_tail: bytes
+    duration_seconds: float
+    launch_failed: bool = False
+    launch_errno: Optional[int] = None
+    timed_out: bool = False
+    interrupted: bool = False
+    reason_id: Optional[str] = None
+    final_output: Optional[bytes] = None
+    final_output_error: Optional[str] = None
+    cleanup_failed: bool = False
+
+
+@dataclass(frozen=True)
+class Failure:
+    failure_class: str
+    reason_id: str
+
+
+@dataclass(frozen=True)
+class GateResult:
+    name: str
+    status: str
+    exit_code: int
+    reason_id: str
+
+
+@dataclass(frozen=True)
+class ChainOutcome:
+    exit_code: int
+    vendor: Optional[str]
+    final_output: Optional[bytes] = None
+
+
+@dataclass(frozen=True)
+class ProtectedFile:
+    path: Path
+    digest: str
+    mode: int
+
+
+@dataclass(frozen=True)
+class VendorHealth:
+    installed: bool
+    authenticated: bool
+    ready: bool
+    reason_id: str
+
+
+class TailBuffer:
+    """Thread-safe bounded byte tail."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.parts = deque()  # type: Deque[bytes]
+        self.size = 0
+        self.lock = threading.Lock()
+
+    def append(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        with self.lock:
+            self.parts.append(chunk)
+            self.size += len(chunk)
+            while self.size > self.limit and self.parts:
+                excess = self.size - self.limit
+                first = self.parts[0]
+                if len(first) <= excess:
+                    self.parts.popleft()
+                    self.size -= len(first)
+                else:
+                    self.parts[0] = first[excess:]
+                    self.size -= excess
+
+    def value(self) -> bytes:
+        with self.lock:
+            return b"".join(self.parts)
+
+
+class CodexFinalOutputParser:
+    """Incrementally isolate the last completed Codex agent message."""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.pending = bytearray()
+        self.final_output = None  # type: Optional[bytes]
+        self.error = None  # type: Optional[str]
+        self.saw_error_event = False
+
+    def _fail(self, reason: str) -> None:
+        if self.error is None:
+            self.error = reason
+        self.pending.clear()
+        self.final_output = None
+
+    def feed(self, chunk: bytes) -> None:
+        if not chunk or self.error is not None:
+            return
+        self.total += len(chunk)
+        if self.total > FINAL_NATIVE_STREAM_LIMIT:
+            self._fail("final_output_oversized")
+            return
+        self.pending.extend(chunk)
+        while True:
+            newline = self.pending.find(b"\n")
+            if newline < 0:
+                break
+            line = bytes(self.pending[:newline])
+            del self.pending[:newline + 1]
+            self._parse_line(line)
+            if self.error is not None:
+                return
+
+    def _parse_line(self, line: bytes) -> None:
+        if not line.strip():
+            return
+        try:
+            event = json.loads(
+                line.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+            )
+        except (UnicodeError, ValueError, RecursionError):
+            self._fail("final_output_malformed")
+            return
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            self._fail("final_output_malformed")
+            return
+        event_type = event["type"]
+        if event_type in ("error", "turn.failed"):
+            self.saw_error_event = True
+            return
+        if event_type != "item.completed":
+            return
+        item = event.get("item")
+        if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            self._fail("final_output_malformed")
+            return
+        # Tool, exec, reasoning, and user items are valid native events but are
+        # deliberately outside the answer trust boundary.
+        if item["type"] != "agent_message":
+            return
+        text_value = item.get("text")
+        if not isinstance(text_value, str) or not text_value:
+            self._fail("final_output_malformed")
+            return
+        try:
+            encoded = text_value.encode("utf-8")
+        except UnicodeError:
+            self._fail("final_output_malformed")
+            return
+        if len(encoded) > FINAL_OUTPUT_LIMIT:
+            self._fail("final_output_oversized")
+            return
+        # Codex can complete more than one agent message during a turn.  Its
+        # native stream is ordered, so the last completed one is the defined
+        # final answer; earlier messages never escape this parser.
+        self.final_output = encoded
+
+    def finish(self) -> Tuple[Optional[bytes], Optional[str]]:
+        if self.error is None and self.pending:
+            line = bytes(self.pending)
+            self.pending.clear()
+            self._parse_line(line)
+        if self.error is not None:
+            return None, self.error
+        if self.saw_error_event:
+            return None, "final_output_error"
+        if self.final_output is None:
+            return None, "final_output_missing"
+        return self.final_output, None
+
+
+class ClaudeFinalOutputParser:
+    """Bound and validate Claude's single top-level result document."""
+
+    def __init__(self) -> None:
+        self.payload = bytearray()
+        self.error = None  # type: Optional[str]
+
+    def feed(self, chunk: bytes) -> None:
+        if not chunk or self.error is not None:
+            return
+        if len(self.payload) + len(chunk) > FINAL_NATIVE_STREAM_LIMIT:
+            self.payload.clear()
+            self.error = "final_output_oversized"
+            return
+        self.payload.extend(chunk)
+
+    def finish(self) -> Tuple[Optional[bytes], Optional[str]]:
+        if self.error is not None:
+            return None, self.error
+        if not self.payload:
+            return None, "final_output_missing"
+        try:
+            document = json.loads(
+                bytes(self.payload).decode("utf-8"),
+                object_pairs_hook=_reject_duplicate_keys,
+            )
+        except (UnicodeError, ValueError, RecursionError):
+            return None, "final_output_malformed"
+        if not isinstance(document, dict) or document.get("type") != "result":
+            return None, "final_output_malformed"
+        if document.get("subtype") != "success":
+            return None, "final_output_error"
+        if "is_error" in document and document["is_error"] is not False:
+            return None, "final_output_error"
+        result = document.get("result")
+        if not isinstance(result, str) or not result:
+            return None, "final_output_missing"
+        try:
+            encoded = result.encode("utf-8")
+        except UnicodeError:
+            return None, "final_output_malformed"
+        if len(encoded) > FINAL_OUTPUT_LIMIT:
+            return None, "final_output_oversized"
+        return encoded, None
+
+
+class StreamClassifier:
+    """Incrementally finds a stable reason ID without retaining full output."""
+
+    def __init__(self) -> None:
+        self.window = ""
+        self.reason_id = None  # type: Optional[str]
+        self.lock = threading.Lock()
+
+    def feed(self, chunk: bytes) -> None:
+        if self.reason_id is not None:
+            return
+        text = chunk.decode("utf-8", "ignore")
+        with self.lock:
+            candidate = self.window + text
+            for reason_id, pattern in FAILURE_PATTERNS:
+                if pattern.search(candidate):
+                    self.reason_id = reason_id
+                    return
+            self.window = candidate[-512:]
+
+
+class _DarwinProcBSDInfo(ctypes.Structure):
+    """The stable prefix of Darwin's public ``proc_bsdinfo`` structure."""
+
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+_darwin_proc_pidinfo = None  # type: Any
+_darwin_libproc_unavailable = False
+
+
+def _load_darwin_libproc() -> bool:
+    global _darwin_proc_pidinfo, _darwin_libproc_unavailable
+    if sys.platform != "darwin" or _darwin_libproc_unavailable:
+        return False
+    if _darwin_proc_pidinfo is not None:
+        return True
+    try:
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        function = library.proc_pidinfo
+        function.argtypes = (
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        )
+        function.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        _darwin_libproc_unavailable = True
+        return False
+    _darwin_proc_pidinfo = function
+    return True
+
+
+def process_identity(pid: int) -> Optional[str]:
+    """Return a stable kernel start token, or None when it cannot be read."""
+    if os.name != "posix" or pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/{}/stat".format(pid), "rb") as handle:
+                raw = handle.read(16 * 1024)
+        except OSError:
+            return None
+        # Field 2 (comm) is parenthesised and may contain spaces or parentheses.
+        # Kernel comm is bounded, so splitting relative to the final ')' makes
+        # field 22 (starttime) stable without inspecting a command line.
+        fields = raw.rsplit(b")", 1)[-1].split()
+        if len(fields) < 20 or not fields[19].isdigit():
+            return None
+        try:
+            return "linux:" + fields[19].decode("ascii")
+        except UnicodeError:
+            return None
+    if sys.platform == "darwin" and _load_darwin_libproc():
+        info = _DarwinProcBSDInfo()
+        assert _darwin_proc_pidinfo is not None
+        size = _darwin_proc_pidinfo(
+            pid,
+            3,  # PROC_PIDTBSDINFO
+            0,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if size < ctypes.sizeof(info) or info.pbi_pid != pid:
+            return None
+        if not info.pbi_start_tvsec and not info.pbi_start_tvusec:
+            return None
+        return "darwin:{}:{}".format(
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        )
+    return None
+
+
+def encode_group_frame(kind: bytes, process_group: int, identity: str) -> bytes:
+    """Encode one bounded lifecycle event without exposing process metadata."""
+    encoded_identity = identity.encode("utf-8")
+    if kind not in (b"P", b"C") or len(encoded_identity) > 256:
+        raise ValueError("invalid process lifecycle frame")
+    token = binascii.hexlify(encoded_identity)
+    return b"H1 %s %d %s\n" % (kind, process_group, token)
+
+
+class ShutdownHandoff:
+    """Private flow/runner control socket; never inherited by untrusted work."""
+
+    def __init__(self, fd: Optional[int]) -> None:
+        self.fd = fd
+        self.event = threading.Event()
+        self.active_groups = {}  # type: Dict[int, str]
+        self.registration_error = False
+        self.send_lock = threading.Lock()
+        self.closed = False
+        self.watcher = None  # type: Optional[threading.Thread]
+
+    @classmethod
+    def from_environment(cls) -> "ShutdownHandoff":
+        value = os.environ.get(SHUTDOWN_FD_ENV)
+        if value is None:
+            return cls(None)
+        try:
+            fd = int(value)
+        except ValueError:
+            raise ValueError("invalid hermes-coder shutdown file descriptor")
+        if fd < 3:
+            raise ValueError("unsafe hermes-coder shutdown file descriptor")
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            raise ValueError("unavailable hermes-coder shutdown file descriptor: {}".format(exc))
+        if not stat.S_ISSOCK(info.st_mode):
+            raise ValueError("hermes-coder shutdown channel is not a socket")
+        os.set_inheritable(fd, False)
+        return cls(fd)
+
+    def start(self) -> None:
+        if self.fd is None:
+            return
+
+        def watch() -> None:
+            try:
+                while True:
+                    os.read(self.fd, 64)
+                    # The trusted peer may send an explicit request, or simply
+                    # disappear. Both request bounded cleanup of every child
+                    # that remains in its registered process group.
+                    self.event.set()
+                    return
+            except OSError:
+                if not self.closed:
+                    self.event.set()
+
+        self.watcher = threading.Thread(target=watch, name="hermes-shutdown", daemon=True)
+        self.watcher.start()
+
+    def requested(self) -> bool:
+        return self.event.is_set()
+
+    def request_from_signal(self, _signum: int) -> None:
+        self.event.set()
+
+    def _send(self, frame: bytes) -> bool:
+        if self.fd is None:
+            return True
+        with self.send_lock:
+            if self.closed:
+                return False
+            try:
+                offset = 0
+                while offset < len(frame):
+                    written = os.write(self.fd, frame[offset:])
+                    if written <= 0:
+                        raise OSError("short write to shutdown channel")
+                    offset += written
+                return True
+            except OSError:
+                # A vanished flow is itself a shutdown request.
+                self.event.set()
+                return False
+
+    def model_started(self, process_group: int, identity: str) -> bool:
+        self.active_groups[process_group] = identity
+        if self._send(encode_group_frame(b"P", process_group, identity)):
+            return True
+        self.active_groups.pop(process_group, None)
+        return False
+
+    def model_stopped(self, process_group: int, identity: str) -> None:
+        if self.active_groups.get(process_group) != identity:
+            return
+        del self.active_groups[process_group]
+        self._send(encode_group_frame(b"C", process_group, identity))
+
+    def registration_failed(self) -> None:
+        self.registration_error = True
+        self.event.set()
+        self._send(b"H1 F\n")
+
+    def acknowledge(self) -> None:
+        if not self.requested():
+            return
+        # A success acknowledgement is emitted only after every registered
+        # model group has synchronously disappeared.
+        failed = self.registration_error or bool(self.active_groups)
+        self._send(b"H1 F\n" if failed else b"H1 A\n")
+
+    def close(self) -> None:
+        with self.send_lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.fd is not None:
+                try:
+                    os.close(self.fd)
+                except OSError:
+                    pass
+
+
+def resolve_lane(name: str) -> str:
+    return LANE_ALIASES.get(name, name)
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer, got {!r}".format(value))
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1, got {}".format(parsed))
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a number, got {!r}".format(value))
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number > 0")
+    return parsed
+
+
+def nonnegative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a number, got {!r}".format(value))
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite number >= 0")
+    return parsed
+
+
+def doctor_timeout(value: str) -> float:
+    parsed = positive_float(value)
+    if parsed > MAX_DOCTOR_TIMEOUT:
+        raise argparse.ArgumentTypeError(
+            "must be <= {} seconds".format(int(MAX_DOCTOR_TIMEOUT))
+        )
+    return parsed
+
+
+def journal_size(value: str) -> int:
+    parsed = positive_int(value)
+    if parsed < 1024:
+        raise argparse.ArgumentTypeError("must be >= 1024 bytes")
+    return parsed
+
+
+def build_escalation_chain(lane: str, no_escalate: bool) -> List[str]:
+    if no_escalate or lane == "security" or lane not in ESCALATION_ORDER:
+        return [lane]
+    start = ESCALATION_ORDER.index(lane)
+    return list(ESCALATION_ORDER[start:])
+
+
+def build_attempts(chain: List[str], primary: str, fallback: str) -> List[Tuple[str, str]]:
+    attempts = []  # type: List[Tuple[str, str]]
+    for lane in chain:
+        attempts.append((lane, primary))
+        attempts.append((lane, fallback))
+    return attempts
+
+
+def build_command(
+    engine: str,
+    model: str,
+    effort: str,
+    prompt: str,
+    workdir: Path,
+    task: str,
+    max_turns: int,
+    final_output_only: bool = False,
+) -> List[str]:
+    read_only = task in READ_ONLY_TASKS
+    if engine == "claude":
+        permission_mode = "plan" if read_only else "acceptEdits"
+        cmd = [
+            CLAUDE_WRAPPER,
+            "--model",
+            model,
+            "--effort",
+            effort,
+            "--max-turns",
+            str(max_turns),
+            "--no-session-persistence",
+            "--permission-mode",
+            permission_mode,
+        ]
+        if read_only:
+            cmd.append("--safe-mode")
+        if final_output_only:
+            cmd += ["--output-format", "json"]
+        cmd += ["--print", "--", prompt]
+        return cmd
+
+    sandbox = "read-only" if read_only else "workspace-write"
+    cmd = [
+        CODEX_CLI,
+        "exec",
+    ]
+    if final_output_only:
+        cmd.append("--json")
+    cmd += [
+        "-m",
+        model,
+        "-c",
+        'model_reasoning_effort="{}"'.format(effort),
+        "-s",
+        sandbox,
+        "-C",
+        str(workdir),
+        "--",
+        prompt,
+    ]
+    return cmd
+
+
+def _write_live(stream: Any, chunk: bytes) -> None:
+    try:
+        binary = getattr(stream, "buffer", stream)
+        binary.write(chunk)
+        binary.flush()
+    except (BrokenPipeError, OSError, TypeError):
+        pass
+
+
+def child_subprocess_environment() -> Dict[str, str]:
+    """Return the common sanitized environment for untrusted children."""
+    environment = os.environ.copy()
+    for name in GIT_CONTROL_ENV + PRIVATE_CHILD_ENV:
+        environment.pop(name, None)
+    for name in list(environment):
+        if name.startswith("GIT_CONFIG_"):
+            environment.pop(name, None)
+    return environment
+
+
+def model_subprocess_environment() -> Dict[str, str]:
+    """Return the model environment with compiler profiling sent off-tree."""
+    environment = child_subprocess_environment()
+    environment["LLVM_PROFILE_FILE"] = os.devnull
+    return environment
+
+
+def gate_subprocess_environment() -> Dict[str, str]:
+    """Return the gate environment without changing user profiling policy."""
+    return child_subprocess_environment()
+
+
+def _signal_process_group(
+    process_group: int,
+    proc: subprocess.Popen,
+    sig: int,
+    identity: Optional[str],
+) -> bool:
+    try:
+        if os.name == "posix":
+            if not identity or process_identity(process_group) != identity:
+                return False
+            os.killpg(process_group, sig)
+        else:  # pragma: no cover - exercised only on Windows.
+            proc.send_signal(sig)
+    except ProcessLookupError:
+        return not _process_group_exists(process_group, proc)
+    except OSError:
+        return False
+    return True
+
+
+def _process_group_exists(process_group: int, proc: subprocess.Popen) -> bool:
+    if os.name != "posix":  # pragma: no cover - exercised only on Windows.
+        return proc.poll() is None
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_process_group(process_group: int, proc: subprocess.Popen, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while _process_group_exists(process_group, proc):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            proc.wait(timeout=min(0.05, remaining))
+        except subprocess.TimeoutExpired:
+            pass
+        if proc.poll() is not None:
+            time.sleep(min(0.05, max(0.0, remaining)))
+    return True
+
+
+def _stop_process_group(
+    proc: subprocess.Popen,
+    first_signal: int,
+    identity: Optional[str] = None,
+) -> bool:
+    process_group = proc.pid
+    if not _process_group_exists(process_group, proc):
+        return True
+    if not _signal_process_group(process_group, proc, first_signal, identity):
+        return not _process_group_exists(process_group, proc)
+    stopped = _wait_for_process_group(process_group, proc, 1.0)
+    if not stopped and first_signal != signal.SIGTERM:
+        if not _signal_process_group(
+            process_group, proc, signal.SIGTERM, identity
+        ):
+            return not _process_group_exists(process_group, proc)
+        stopped = _wait_for_process_group(process_group, proc, 1.0)
+    # Waiting for only the group leader is insufficient: it may exit while a
+    # descendant that ignored TERM continues in the same group. Escalation is
+    # allowed only while the recorded group owner still validates.
+    if not stopped and _process_group_exists(process_group, proc):
+        if not _signal_process_group(
+            process_group, proc, signal.SIGKILL, identity
+        ):
+            return False
+        _wait_for_process_group(process_group, proc, 1.0)
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+    return not _process_group_exists(process_group, proc)
+
+
+def _terminate_direct_child(proc: subprocess.Popen) -> None:
+    """Synchronously stop/reap only a direct child whose group is unverified."""
+    # Close captured streams before waiting so this exceptional path cannot
+    # retain unbounded child output in communicate().
+    for pipe in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
+        try:
+            pipe.close()
+        except (AttributeError, OSError):
+            pass
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
+def _resolve_health_executable(command: str) -> Optional[str]:
+    """Resolve a configured CLI without exposing its path in doctor output."""
+    if os.path.dirname(command):
+        candidate = Path(command).expanduser()
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            return None
+        if resolved.is_file() and os.access(str(resolved), os.X_OK):
+            return str(resolved)
+        return None
+    return shutil.which(command)
+
+
+def _auth_health(
+    vendor: str,
+    configured_command: str,
+    status_arguments: Sequence[str],
+    timeout_seconds: float,
+    shutdown: Optional[ShutdownHandoff],
+) -> VendorHealth:
+    executable = _resolve_health_executable(configured_command)
+    if executable is None:
+        return VendorHealth(False, False, False, "{}_not_installed".format(vendor))
+    if shutdown is not None and shutdown.requested():
+        return VendorHealth(True, False, False, "{}_auth_interrupted".format(vendor))
+    if os.name == "posix" and process_identity(os.getpid()) is None:
+        return VendorHealth(True, False, False, "{}_auth_launch_failed".format(vendor))
+
+    try:
+        proc = subprocess.Popen(
+            [executable] + list(status_arguments),
+            cwd=str(Path.cwd()),
+            env=child_subprocess_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(os.name == "posix"),
+        )
+    except OSError:
+        return VendorHealth(True, False, False, "{}_auth_launch_failed".format(vendor))
+
+    group_identity = process_identity(proc.pid) if os.name == "posix" else None
+    if os.name == "posix" and group_identity is None:
+        if shutdown is not None:
+            shutdown.registration_failed()
+        _terminate_direct_child(proc)
+        return VendorHealth(True, False, False, "{}_auth_launch_failed".format(vendor))
+    if shutdown is not None:
+        if group_identity is None:  # pragma: no cover - Windows fallback.
+            group_identity = "direct:{}".format(proc.pid)
+        if not shutdown.model_started(proc.pid, group_identity):
+            shutdown.registration_failed()
+
+    deadline = time.monotonic() + timeout_seconds
+    timed_out = False
+    interrupted = False
+    cleanup_failed = False
+    while proc.poll() is None:
+        if shutdown is not None and shutdown.requested():
+            interrupted = True
+            cleanup_failed = not _stop_process_group(
+                proc, signal.SIGTERM, group_identity
+            )
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            cleanup_failed = not _stop_process_group(
+                proc, signal.SIGTERM, group_identity
+            )
+            break
+        try:
+            proc.wait(timeout=min(0.05, remaining))
+        except subprocess.TimeoutExpired:
+            pass
+    if _process_group_exists(proc.pid, proc):
+        cleanup_failed = not _stop_process_group(
+            proc, signal.SIGTERM, group_identity
+        ) or cleanup_failed
+    group_stopped = not _process_group_exists(proc.pid, proc)
+    if shutdown is not None and group_stopped and group_identity is not None:
+        shutdown.model_stopped(proc.pid, group_identity)
+    if interrupted:
+        return VendorHealth(True, False, False, "{}_auth_interrupted".format(vendor))
+    if timed_out:
+        return VendorHealth(True, False, False, "{}_auth_timeout".format(vendor))
+    if cleanup_failed:
+        return VendorHealth(True, False, False, "{}_auth_unavailable".format(vendor))
+    rc = proc.returncode if proc.returncode is not None else 1
+    if rc == 0:
+        return VendorHealth(True, True, True, "ready")
+    return VendorHealth(True, False, False, "{}_auth_unavailable".format(vendor))
+
+
+def run_doctor(
+    requirement: str,
+    timeout_seconds: float,
+    shutdown: Optional[ShutdownHandoff],
+) -> int:
+    """Check local subscription CLIs without invoking a model."""
+    health = {
+        "claude": _auth_health(
+            "claude", CLAUDE_WRAPPER, ("auth", "status"), timeout_seconds, shutdown
+        ),
+        "codex": _auth_health(
+            "codex", CODEX_CLI, ("login", "status"), timeout_seconds, shutdown
+        ),
+    }
+    ready_count = sum(1 for result in health.values() if result.ready)
+    ready = ready_count >= 1 if requirement == "any" else ready_count == len(health)
+    interrupted = any(result.reason_id.endswith("_interrupted") for result in health.values())
+    reason_id = "ready" if ready else "requirement_not_met"
+    document = {
+        "schema": SCHEMA_VERSION,
+        "kind": DOCTOR_KIND,
+        "requirement": requirement,
+        "ready": ready,
+        "reason_id": reason_id,
+        "vendors": dict(
+            (
+                vendor,
+                {
+                    "installed": result.installed,
+                    "authenticated": result.authenticated,
+                    "ready": result.ready,
+                    "reason_id": result.reason_id,
+                },
+            )
+            for vendor, result in health.items()
+        ),
+    }
+    print(json.dumps(document, sort_keys=True, separators=(",", ":")))
+    if ready:
+        return 0
+    return EXIT_ABORT if interrupted else EXIT_UNAVAILABLE
+
+
+def run_process(
+    cmd: Sequence[str],
+    workdir: Path,
+    timeout_seconds: float,
+    shutdown: Optional[ShutdownHandoff] = None,
+    report_model_group: bool = False,
+    environment: Optional[Dict[str, str]] = None,
+    final_output_engine: Optional[str] = None,
+) -> RunResult:
+    """Run a child with live/default or isolated/native stdout handling."""
+    started = time.monotonic()
+    if shutdown is not None and shutdown.requested():
+        return RunResult(
+            exit_code=EXIT_ABORT,
+            stdout_tail=b"",
+            stderr_tail=b"",
+            duration_seconds=0.0,
+            interrupted=True,
+            reason_id="shutdown_requested",
+        )
+    # POSIX group signalling is safe only when its owner can be bound to a
+    # stable kernel identity. Check capability before creating any model/gate.
+    if os.name == "posix" and process_identity(os.getpid()) is None:
+        return RunResult(
+            exit_code=EXIT_HARNESS,
+            stdout_tail=b"",
+            stderr_tail=b"",
+            duration_seconds=time.monotonic() - started,
+            launch_failed=True,
+            reason_id="process_identity_unavailable",
+        )
+    try:
+        proc = subprocess.Popen(
+            list(cmd),
+            cwd=str(workdir),
+            env=environment if environment is not None else child_subprocess_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=(os.name == "posix"),
+        )
+    except OSError as exc:
+        return RunResult(
+            exit_code=127 if exc.errno == errno.ENOENT else 126,
+            stdout_tail=b"",
+            stderr_tail=b"",
+            duration_seconds=time.monotonic() - started,
+            launch_failed=True,
+            launch_errno=exc.errno,
+            reason_id="executable_missing" if exc.errno == errno.ENOENT else "launch_os_error",
+        )
+
+    group_identity = process_identity(proc.pid) if os.name == "posix" else None
+    if os.name == "posix" and group_identity is None:
+        # Never manufacture a POSIX identity. The unreaped direct Popen child
+        # cannot have its PID recycled, so only that handle is used here.
+        if shutdown is not None and report_model_group:
+            shutdown.registration_failed()
+        _terminate_direct_child(proc)
+        return RunResult(
+            exit_code=EXIT_HARNESS,
+            stdout_tail=b"",
+            stderr_tail=b"",
+            duration_seconds=time.monotonic() - started,
+            launch_failed=True,
+            reason_id="process_identity_unavailable",
+        )
+    if shutdown is not None and report_model_group:
+        if group_identity is None:  # pragma: no cover - Windows fallback.
+            group_identity = "direct:{}".format(proc.pid)
+        if not shutdown.model_started(proc.pid, group_identity):
+            shutdown.registration_failed()
+
+    stdout_tail = TailBuffer(TAIL_LIMIT)
+    stderr_tail = TailBuffer(TAIL_LIMIT)
+    classifier = StreamClassifier()
+    stdout_pump_failed = threading.Event()
+    final_parser = None  # type: Any
+    if final_output_engine == "codex":
+        final_parser = CodexFinalOutputParser()
+    elif final_output_engine == "claude":
+        final_parser = ClaudeFinalOutputParser()
+
+    def pump(pipe: Any, destination: Any, tail: TailBuffer, parser: Any = None) -> None:
+        try:
+            while True:
+                # os.read returns currently available pipe data instead of
+                # waiting for BufferedReader.read() to fill the whole request.
+                # That distinction is what makes short progress messages live.
+                chunk = os.read(pipe.fileno(), 8192)
+                if not chunk:
+                    break
+                if destination is not None:
+                    _write_live(destination, chunk)
+                tail.append(chunk)
+                classifier.feed(chunk)
+                if parser is not None:
+                    parser.feed(chunk)
+        except OSError:
+            if parser is not None:
+                stdout_pump_failed.set()
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    threads = [
+        threading.Thread(
+            target=pump,
+            args=(
+                proc.stdout,
+                None if final_parser is not None else sys.stdout,
+                stdout_tail,
+                final_parser,
+            ),
+            daemon=True,
+        ),
+        threading.Thread(target=pump, args=(proc.stderr, sys.stderr, stderr_tail), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    timed_out = False
+    interrupted = False
+    cleanup_failed = False
+    deadline = started + timeout_seconds
+    try:
+        while proc.poll() is None:
+            if shutdown is not None and shutdown.requested():
+                interrupted = True
+                cleanup_failed = not _stop_process_group(
+                    proc, signal.SIGTERM, group_identity
+                )
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                cleanup_failed = not _stop_process_group(
+                    proc, signal.SIGTERM, group_identity
+                )
+                break
+            try:
+                proc.wait(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                pass
+    except KeyboardInterrupt:
+        interrupted = True
+        cleanup_failed = not _stop_process_group(
+            proc, signal.SIGINT, group_identity
+        )
+
+    if shutdown is not None and shutdown.requested() and not timed_out:
+        interrupted = True
+
+    if _process_group_exists(proc.pid, proc):
+        cleanup_failed = not _stop_process_group(
+            proc, signal.SIGTERM, group_identity
+        ) or cleanup_failed
+
+    group_stopped = not _process_group_exists(proc.pid, proc)
+    if (
+        shutdown is not None
+        and report_model_group
+        and group_stopped
+        and group_identity is not None
+    ):
+        shutdown.model_stopped(proc.pid, group_identity)
+
+    for thread in threads:
+        thread.join(timeout=2.0)
+    rc = proc.returncode if proc.returncode is not None else 1
+    if interrupted:
+        rc = EXIT_ABORT
+    elif timed_out:
+        rc = 124
+    elif rc < 0:
+        rc = 128 + (-rc)
+    final_output = None  # type: Optional[bytes]
+    final_output_error = None  # type: Optional[str]
+    if final_parser is not None and rc == 0:
+        if threads[0].is_alive() or stdout_pump_failed.is_set():
+            final_output_error = "final_output_incomplete"
+        else:
+            final_output, final_output_error = final_parser.finish()
+        if final_output_error is not None:
+            rc = 1
+    return RunResult(
+        exit_code=rc,
+        stdout_tail=stdout_tail.value(),
+        stderr_tail=stderr_tail.value(),
+        duration_seconds=time.monotonic() - started,
+        timed_out=timed_out,
+        interrupted=interrupted,
+        reason_id=(
+            "process_group_cleanup_failed" if cleanup_failed else classifier.reason_id
+        ),
+        final_output=final_output,
+        final_output_error=final_output_error,
+        cleanup_failed=cleanup_failed,
+    )
+
+
+def run(
+    cmd: List[str],
+    workdir: Path,
+    dry_run: bool,
+    timeout_seconds: float = DEFAULT_ATTEMPT_TIMEOUT,
+    shutdown: Optional[ShutdownHandoff] = None,
+    final_output_engine: Optional[str] = None,
+) -> RunResult:
+    print("+ " + shlex.join(cmd), file=sys.stderr)
+    if dry_run:
+        return RunResult(0, b"", b"", 0.0)
+    result = run_process(
+        cmd,
+        workdir,
+        timeout_seconds,
+        shutdown,
+        report_model_group=True,
+        environment=model_subprocess_environment(),
+        final_output_engine=final_output_engine,
+    )
+    if result.launch_failed:
+        if result.reason_id == "process_identity_unavailable":
+            print("CLI launch failed: stable process identity unavailable", file=sys.stderr)
+        else:
+            detail = os.strerror(result.launch_errno) if result.launch_errno else "unknown OS error"
+            print("CLI launch failed: {}".format(detail), file=sys.stderr)
+    if result.cleanup_failed:
+        print("Process-group cleanup failed safely.", file=sys.stderr)
+    if result.final_output_error is not None:
+        print(
+            "Final output isolation failed ({}).".format(result.final_output_error),
+            file=sys.stderr,
+        )
+    return result
+
+
+def classify_failure(result: RunResult) -> Failure:
+    if result.launch_failed or result.exit_code in (126, 127):
+        return Failure("harness_error", result.reason_id or "cli_launch_failed")
+    if result.interrupted or result.exit_code == EXIT_ABORT:
+        return Failure("user_abort", "user_interrupt")
+    if result.timed_out:
+        return Failure("timeout", "attempt_timeout")
+    if result.cleanup_failed:
+        return Failure("harness_error", result.reason_id or "process_group_cleanup_failed")
+    if result.final_output_error is not None:
+        return Failure("capability_failure", result.final_output_error)
+    if result.reason_id:
+        return Failure("quota_or_auth", result.reason_id)
+    if result.exit_code >= 128:
+        return Failure("capability_failure", "child_signal")
+    return Failure("capability_failure", "child_nonzero")
+
+
+def _ensure_private_directory(path: Path) -> None:
+    if path.exists() or path.is_symlink():
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise OSError("unsafe directory: {}".format(path))
+        if info.st_uid != os.getuid():
+            raise OSError("directory is not owned by current user: {}".format(path))
+        os.chmod(str(path), 0o700)
+        return
+    parent = path.parent
+    if parent != path and not parent.exists():
+        _ensure_private_directory(parent)
+    path.mkdir(mode=0o700)
+
+
+def _secure_open(path: Path, flags: int, mode: int = 0o600) -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags | nofollow, mode)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        os.close(fd)
+        raise OSError("unsafe non-regular or unowned file: {}".format(path))
+    os.fchmod(fd, mode)
+    return fd
+
+
+def _lock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+class WarningOnce:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.warned = False
+
+    def warn(self, exc: BaseException) -> None:
+        if not self.warned:
+            self.warned = True
+            print("Warning: {} disabled for this run: {}".format(self.label, exc), file=sys.stderr)
+
+
+class Journal:
+    def __init__(self, path: Optional[Path], max_bytes: int, backups: int) -> None:
+        self.path = path
+        self.max_bytes = max_bytes
+        self.backups = backups
+        self.disabled = path is None
+        self.warning = WarningOnce("hermes-coder journal")
+
+    def _rotate(self, incoming_bytes: int) -> None:
+        assert self.path is not None
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise OSError("unsafe journal file: {}".format(self.path))
+        if info.st_size + incoming_bytes <= self.max_bytes:
+            return
+        if self.backups == 0:
+            self.path.unlink()
+            return
+        for index in range(self.backups, 0, -1):
+            source = self.path if index == 1 else Path(str(self.path) + ".{}".format(index - 1))
+            target = Path(str(self.path) + ".{}".format(index))
+            try:
+                source_info = source.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(source_info.st_mode) or not stat.S_ISREG(source_info.st_mode) or source_info.st_uid != os.getuid():
+                raise OSError("unsafe journal rotation source: {}".format(source))
+            try:
+                target_info = target.lstat()
+            except FileNotFoundError:
+                target_info = None
+            if target_info is not None:
+                if stat.S_ISLNK(target_info.st_mode) or not stat.S_ISREG(target_info.st_mode) or target_info.st_uid != os.getuid():
+                    raise OSError("unsafe journal rotation target: {}".format(target))
+                target.unlink()
+            source.replace(target)
+
+    def write(self, record: Dict[str, Any]) -> None:
+        if self.disabled or self.path is None:
+            return
+        # Privacy is enforced here, not merely by convention at call sites.
+        safe = {key: value for key, value in record.items() if key in JOURNAL_FIELDS}
+        safe["schema"] = SCHEMA_VERSION
+        line = (json.dumps(safe, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            _ensure_private_directory(self.path.parent)
+            lock_path = Path(str(self.path) + ".lock")
+            lock_fd = _secure_open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            try:
+                _lock(lock_fd)
+                self._rotate(len(line))
+                fd = _secure_open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                try:
+                    os.write(fd, line)
+                finally:
+                    os.close(fd)
+            finally:
+                _unlock(lock_fd)
+                os.close(lock_fd)
+        except Exception as exc:
+            self.disabled = True
+            self.warning.warn(exc)
+
+
+class CircuitBreaker:
+    """Persistent quota/auth cooldown; failures degrade to an open circuit store."""
+
+    def __init__(self, path: Optional[Path], cooldown_seconds: float) -> None:
+        self.path = path
+        self.cooldown_seconds = cooldown_seconds
+        self.disabled = path is None
+        self.warning = WarningOnce("hermes-coder circuit state")
+
+    def _operate(self, callback: Any) -> Any:
+        if self.disabled or self.path is None:
+            return callback({"schema": SCHEMA_VERSION, "vendors": {}})[0]
+        try:
+            _ensure_private_directory(self.path.parent)
+            lock_path = Path(str(self.path) + ".lock")
+            lock_fd = _secure_open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            try:
+                _lock(lock_fd)
+                state = {"schema": SCHEMA_VERSION, "vendors": {}}  # type: Dict[str, Any]
+                try:
+                    fd = _secure_open(self.path, os.O_RDONLY, 0o600)
+                except FileNotFoundError:
+                    fd = -1
+                if fd >= 0:
+                    try:
+                        raw = os.read(fd, 65537)
+                    finally:
+                        os.close(fd)
+                    if len(raw) > 65536:
+                        raise OSError("circuit state exceeds 64 KiB")
+                    loaded = json.loads(raw.decode("utf-8")) if raw else state
+                    if not isinstance(loaded, dict) or loaded.get("schema") != SCHEMA_VERSION:
+                        raise ValueError("unsupported circuit state schema")
+                    if not isinstance(loaded.get("vendors"), dict):
+                        raise ValueError("invalid circuit vendor map")
+                    state = loaded
+                result, changed = callback(state)
+                if changed:
+                    payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    fd = _secure_open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    try:
+                        os.write(fd, payload)
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                return result
+            finally:
+                _unlock(lock_fd)
+                os.close(lock_fd)
+        except Exception as exc:
+            self.disabled = True
+            self.warning.warn(exc)
+            return callback({"schema": SCHEMA_VERSION, "vendors": {}})[0]
+
+    def blocked_vendors(self, now: Optional[float] = None) -> Set[str]:
+        current = time.time() if now is None else now
+
+        def inspect(state: Dict[str, Any]) -> Tuple[Set[str], bool]:
+            vendors = state["vendors"]
+            blocked = set()  # type: Set[str]
+            changed = False
+            for vendor in ("claude", "codex"):
+                entry = vendors.get(vendor)
+                if not isinstance(entry, dict):
+                    continue
+                until = entry.get("blocked_until")
+                if (
+                    isinstance(until, (int, float))
+                    and not isinstance(until, bool)
+                    and math.isfinite(until)
+                    and until > current
+                ):
+                    blocked.add(vendor)
+                else:
+                    vendors.pop(vendor, None)
+                    changed = True
+            return blocked, changed
+
+        return self._operate(inspect)
+
+    def block(self, vendor: str, reason_id: str) -> None:
+        if self.cooldown_seconds == 0:
+            return
+
+        def update(state: Dict[str, Any]) -> Tuple[None, bool]:
+            state["vendors"][vendor] = {
+                "blocked_until": round(time.time() + self.cooldown_seconds, 3),
+                "reason_id": reason_id,
+            }
+            return None, True
+
+        self._operate(update)
+
+
+def _reject_duplicate_keys(pairs: Iterable[Tuple[str, Any]]) -> Dict[str, Any]:
+    result = {}  # type: Dict[str, Any]
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: {}".format(key))
+        result[key] = value
+    return result
+
+
+def _validate_gate(raw: Any, source: str, default_timeout: float) -> Gate:
+    if not isinstance(raw, dict):
+        raise ValueError("{} gate must be an object".format(source))
+    unknown = set(raw) - {"name", "argv", "timeout_seconds"}
+    if unknown:
+        raise ValueError("{} gate has unknown keys: {}".format(source, ", ".join(sorted(unknown))))
+    name = raw.get("name")
+    argv = raw.get("argv")
+    timeout = raw.get("timeout_seconds", default_timeout)
+    if not isinstance(name, str) or not name or len(name) > 128 or any(ord(char) < 32 for char in name):
+        raise ValueError("{} gate name must be 1-128 printable characters".format(source))
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg and "\0" not in arg for arg in argv):
+        raise ValueError("{} gate argv must be a non-empty array of non-empty strings".format(source))
+    valid_timeout = not isinstance(timeout, bool) and isinstance(timeout, (int, float))
+    if valid_timeout:
+        try:
+            valid_timeout = math.isfinite(timeout) and timeout > 0
+        except OverflowError:
+            valid_timeout = False
+    if not valid_timeout:
+        raise ValueError("{} gate timeout_seconds must be a finite number > 0".format(source))
+    return Gate(name, tuple(argv), float(timeout))
+
+
+def load_gates(gate_file: Optional[Path], cli_gates: Sequence[str], default_timeout: float, workdir: Path) -> Tuple[Gate, ...]:
+    gates = []  # type: List[Gate]
+    if gate_file is not None:
+        try:
+            raw_bytes = gate_file.read_bytes()
+        except OSError as exc:
+            raise ValueError("cannot read gate file {}: {}".format(gate_file, exc))
+        if len(raw_bytes) > 1024 * 1024:
+            raise ValueError("gate file exceeds 1 MiB")
+        try:
+            document = json.loads(raw_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("invalid gate JSON: {}".format(exc))
+        if not isinstance(document, dict) or set(document) != {"version", "gates"}:
+            raise ValueError("gate file must contain exactly version and gates")
+        if document["version"] != SCHEMA_VERSION or isinstance(document["version"], bool):
+            raise ValueError("unsupported gate file version")
+        if not isinstance(document["gates"], list):
+            raise ValueError("gate file gates must be an array")
+        for index, raw in enumerate(document["gates"]):
+            gates.append(_validate_gate(raw, "file gate {}".format(index + 1), default_timeout))
+
+    for index, spec in enumerate(cli_gates):
+        if "=" not in spec:
+            raise ValueError("--gate must use NAME=JSON_ARGV")
+        name, encoded = spec.split("=", 1)
+        try:
+            argv = json.loads(encoded)
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid --gate {} JSON: {}".format(index + 1, exc))
+        gates.append(_validate_gate({"name": name, "argv": argv}, "CLI gate {}".format(index + 1), default_timeout))
+
+    names = set()  # type: Set[str]
+    frozen = []  # type: List[Gate]
+    for gate in gates:
+        if gate.name in names:
+            raise ValueError("duplicate gate name: {}".format(gate.name))
+        names.add(gate.name)
+        executable = gate.argv[0]
+        if os.path.dirname(executable):
+            candidate = Path(executable)
+            if not candidate.is_absolute():
+                candidate = workdir / candidate
+            resolved = str(candidate.resolve())
+            if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+                raise FileNotFoundError("gate executable is missing or not executable: {}".format(executable))
+        else:
+            resolved_path = shutil.which(executable)
+            if resolved_path is None:
+                raise FileNotFoundError("gate executable not found on PATH: {}".format(executable))
+            resolved = resolved_path
+        frozen.append(Gate(gate.name, (resolved,) + gate.argv[1:], gate.timeout_seconds))
+    return tuple(frozen)
+
+
+def _hash_regular_file(path: Path) -> ProtectedFile:
+    resolved = path.resolve()
+    info = resolved.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError("protected gate path is not a regular file: {}".format(resolved))
+    digest = hashlib.sha256()
+    with open(str(resolved), "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return ProtectedFile(resolved, digest.hexdigest(), stat.S_IMODE(info.st_mode))
+
+
+def snapshot_gate_integrity(
+    gates: Sequence[Gate],
+    workdir: Path,
+    gate_file: Optional[Path],
+) -> Tuple[ProtectedFile, ...]:
+    """Freeze gate policy, executables, and directly interpreted gate scripts."""
+    candidates = []  # type: List[Path]
+    if gate_file is not None:
+        candidates.append(gate_file)
+    for gate in gates:
+        candidates.append(Path(gate.argv[0]))
+        executable_name = Path(gate.argv[0]).name.lower()
+        is_interpreter = (
+            executable_name in {"sh", "bash", "dash", "zsh", "node", "ruby", "perl", "php"}
+            or executable_name.startswith("python")
+        )
+        if is_interpreter and len(gate.argv) > 1 and not gate.argv[1].startswith("-"):
+            candidate = Path(gate.argv[1])
+            if not candidate.is_absolute():
+                candidate = workdir / candidate
+            try:
+                if candidate.is_file():
+                    candidates.append(candidate)
+            except OSError:
+                pass
+    protected = []  # type: List[ProtectedFile]
+    seen = set()  # type: Set[str]
+    for candidate in candidates:
+        frozen = _hash_regular_file(candidate)
+        key = str(frozen.path)
+        if key not in seen:
+            seen.add(key)
+            protected.append(frozen)
+    return tuple(protected)
+
+
+def verify_gate_integrity(protected: Sequence[ProtectedFile]) -> Optional[str]:
+    for expected in protected:
+        try:
+            actual = _hash_regular_file(expected.path)
+        except OSError:
+            return str(expected.path)
+        if actual.digest != expected.digest or actual.mode != expected.mode:
+            return str(expected.path)
+    return None
+
+
+def _remaining_timeout(deadline: float, maximum: float = 120.0) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("gate snapshot", 0)
+    return min(maximum, remaining)
+
+
+def _git_snapshot_command(arguments: Sequence[str], workdir: Path, deadline: float) -> subprocess.CompletedProcess:
+    environment = gate_subprocess_environment()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    return subprocess.run(
+        ["git"] + list(arguments),
+        cwd=str(workdir),
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=_remaining_timeout(deadline),
+        check=False,
+    )
+
+
+def _digest_frame_header(digest: Any, domain: bytes, length: int) -> None:
+    digest.update(b"HERMES-SNAPSHOT-FRAME-V1\0")
+    digest.update(len(domain).to_bytes(4, "big"))
+    digest.update(domain)
+    digest.update(length.to_bytes(8, "big"))
+
+
+def _digest_frame(digest: Any, domain: bytes, payload: bytes) -> None:
+    _digest_frame_header(digest, domain, len(payload))
+    digest.update(payload)
+
+
+def _snapshot_stat_identity(info: os.stat_result) -> Tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        info.st_size,
+        getattr(info, "st_mtime_ns", int(info.st_mtime * 1000000000)),
+        getattr(info, "st_ctime_ns", int(info.st_ctime * 1000000000)),
+    )
+
+
+def _snapshot_file_type(mode: int) -> bytes:
+    if stat.S_ISREG(mode):
+        return b"regular"
+    if stat.S_ISLNK(mode):
+        return b"symlink"
+    if stat.S_ISDIR(mode):
+        return b"directory"
+    if stat.S_ISFIFO(mode):
+        return b"fifo"
+    if stat.S_ISSOCK(mode):
+        return b"socket"
+    if stat.S_ISCHR(mode):
+        return b"character_device"
+    if stat.S_ISBLK(mode):
+        return b"block_device"
+    return b"unknown"
+
+
+def _open_snapshot_regular_file(path: Path, expected: os.stat_result) -> Tuple[int, os.stat_result]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    fd = os.open(str(path), flags)
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _snapshot_stat_identity(opened) != _snapshot_stat_identity(expected)
+        ):
+            raise OSError(errno.EAGAIN, "snapshot path changed before open")
+        return fd, opened
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _check_gate_snapshot_deadline(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise subprocess.TimeoutExpired("gate snapshot", 0)
+
+
+def _digest_git_visible_entry(
+    digest: Any,
+    raw_path: bytes,
+    candidate: Path,
+    deadline: float,
+) -> None:
+    _digest_frame(digest, b"path", raw_path)
+    _check_gate_snapshot_deadline(deadline)
+    try:
+        before = candidate.lstat()
+    except OSError as exc:
+        # Keep the original snapshot semantics for inaccessible entries and
+        # looped path components: frame only the stable errno, never the path
+        # or exception text, and continue hashing the remaining entries.
+        _digest_frame(digest, b"file_type", b"missing")
+        _digest_frame(digest, b"metadata_errno", str(exc.errno).encode("ascii", "replace"))
+        return
+
+    _digest_frame(digest, b"metadata_mode", str(stat.S_IMODE(before.st_mode)).encode("ascii"))
+    file_type = _snapshot_file_type(before.st_mode)
+    _digest_frame(digest, b"file_type", file_type)
+    if file_type == b"symlink":
+        target = os.fsencode(os.readlink(str(candidate)))
+        after = candidate.lstat()
+        if _snapshot_stat_identity(after) != _snapshot_stat_identity(before):
+            raise OSError(errno.EAGAIN, "snapshot symlink changed while being read")
+        _digest_frame(digest, b"symlink_target", target)
+        return
+    if file_type != b"regular":
+        return
+
+    fd, opened = _open_snapshot_regular_file(candidate, before)
+    try:
+        _digest_frame_header(digest, b"regular_file_content", opened.st_size)
+        remaining = opened.st_size
+        while remaining:
+            _check_gate_snapshot_deadline(deadline)
+            chunk = os.read(fd, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise OSError(errno.EAGAIN, "snapshot file became shorter while being read")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if os.read(fd, 1):
+            raise OSError(errno.EAGAIN, "snapshot file grew while being read")
+        final_fd = os.fstat(fd)
+        final_path = candidate.lstat()
+        expected_identity = _snapshot_stat_identity(opened)
+        if (
+            _snapshot_stat_identity(final_fd) != expected_identity
+            or _snapshot_stat_identity(final_path) != expected_identity
+        ):
+            raise OSError(errno.EAGAIN, "snapshot file changed while being read")
+    finally:
+        os.close(fd)
+
+
+def _hash_untracked_files(raw_paths: bytes, workdir: Path, digest: Any, deadline: float) -> None:
+    paths = [raw_path for raw_path in raw_paths.split(b"\0") if raw_path]
+    _digest_frame(digest, b"path_count", str(len(paths)).encode("ascii"))
+    for raw_path in paths:
+        _digest_git_visible_entry(
+            digest, raw_path, workdir / os.fsdecode(raw_path), deadline
+        )
+
+
+def _filesystem_snapshot(workdir: Path, deadline: float) -> str:
+    digest = hashlib.sha256()
+    _digest_frame(digest, b"snapshot_format", b"filesystem-gate-v2")
+    for root, directories, files in os.walk(str(workdir), topdown=True, followlinks=False):
+        directories[:] = sorted(name for name in directories if name != ".git")
+        for name in sorted(files):
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("gate snapshot", 0)
+            candidate = Path(root) / name
+            relative = os.path.relpath(str(candidate), str(workdir))
+            _hash_untracked_files(os.fsencode(relative) + b"\0", workdir, digest, deadline)
+    return digest.hexdigest()
+
+
+def snapshot_worktree(workdir: Path, deadline: float) -> str:
+    """Hash Git-visible status/diff state, including untracked file contents."""
+    try:
+        probe = _git_snapshot_command(["rev-parse", "--is-inside-work-tree"], workdir, deadline)
+    except FileNotFoundError:
+        return _filesystem_snapshot(workdir, deadline)
+    if probe.returncode != 0 or probe.stdout.strip() != b"true":
+        return _filesystem_snapshot(workdir, deadline)
+
+    commands = (
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    )
+    outputs = []  # type: List[bytes]
+    for arguments in commands:
+        completed = _git_snapshot_command(arguments, workdir, deadline)
+        if completed.returncode != 0:
+            raise OSError("git {} failed while snapshotting gate worktree".format(arguments[0]))
+        outputs.append(completed.stdout)
+    digest = hashlib.sha256()
+    _digest_frame(digest, b"snapshot_format", b"git-visible-gate-v2")
+    _digest_frame(digest, b"status", outputs[0])
+    _digest_frame(digest, b"diff", outputs[1])
+    _digest_frame(digest, b"path_category", b"untracked")
+    _hash_untracked_files(outputs[2], workdir, digest, deadline)
+    return digest.hexdigest()
+
+
+def run_gates(
+    gates: Sequence[Gate],
+    workdir: Path,
+    wall_deadline: float,
+    protected: Sequence[ProtectedFile],
+    shutdown: Optional[ShutdownHandoff] = None,
+) -> Tuple[Optional[GateResult], bool]:
+    for gate in gates:
+        if shutdown is not None and shutdown.requested():
+            return GateResult(gate.name, "abort", EXIT_ABORT, "shutdown_requested"), False
+        changed_path = verify_gate_integrity(protected)
+        if changed_path is not None:
+            print("Quality gate integrity check failed for {}.".format(changed_path), file=sys.stderr)
+            return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_integrity_changed"), True
+        remaining = wall_deadline - time.monotonic()
+        if remaining <= 0:
+            return GateResult(gate.name, "timeout", 124, "wall_timeout"), False
+        try:
+            before = snapshot_worktree(workdir, wall_deadline)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if time.monotonic() >= wall_deadline:
+                return GateResult(gate.name, "timeout", EXIT_TIMEOUT, "wall_timeout"), False
+            print("Cannot snapshot worktree before quality gate {!r}: {}".format(gate.name, exc), file=sys.stderr)
+            return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_snapshot_failed"), True
+        remaining = wall_deadline - time.monotonic()
+        if remaining <= 0:
+            return GateResult(gate.name, "timeout", 124, "wall_timeout"), False
+        wall_limited = remaining <= gate.timeout_seconds
+        timeout = min(gate.timeout_seconds, remaining)
+        print("Running quality gate {!r}: {}".format(gate.name, shlex.join(gate.argv)), file=sys.stderr)
+        # Gates already run in isolated process groups. Register those groups
+        # with the flow handoff too, so an uncleanly terminated runner cannot
+        # orphan a gate outside the flow's exact-PGID cleanup set.
+        result = run_process(
+            gate.argv,
+            workdir,
+            timeout,
+            shutdown,
+            report_model_group=True,
+            environment=gate_subprocess_environment(),
+        )
+        if result.interrupted:
+            return GateResult(gate.name, "abort", EXIT_ABORT, "shutdown_requested"), False
+        try:
+            after = snapshot_worktree(workdir, wall_deadline)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if time.monotonic() >= wall_deadline:
+                return GateResult(gate.name, "timeout", EXIT_TIMEOUT, "wall_timeout"), False
+            print("Cannot snapshot worktree after quality gate {!r}: {}".format(gate.name, exc), file=sys.stderr)
+            return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_snapshot_failed"), True
+        changed_path = verify_gate_integrity(protected)
+        if changed_path is not None:
+            print("Quality gate integrity check failed for {}.".format(changed_path), file=sys.stderr)
+            return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_integrity_changed"), True
+        if before != after:
+            print("Quality gate {!r} modified the worktree; failing closed.".format(gate.name), file=sys.stderr)
+            return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_modified_worktree"), True
+        if result.launch_failed or (result.cleanup_failed and not result.timed_out):
+            label = "cleanup" if result.cleanup_failed else "launch"
+            print("Quality gate {} failed: {}".format(label, gate.name), file=sys.stderr)
+            reason = result.reason_id or (
+                "gate_cleanup_failed" if result.cleanup_failed else "gate_launch_failed"
+            )
+            return GateResult(
+                gate.name, "harness_error", result.exit_code, reason
+            ), True
+        if result.exit_code != 0:
+            status = "timeout" if result.timed_out else "failed"
+            reason = (
+                "wall_timeout"
+                if result.timed_out and wall_limited and time.monotonic() >= wall_deadline
+                else "gate_timeout" if result.timed_out else "gate_nonzero"
+            )
+            print("Quality gate {!r} {} (exit {}).".format(gate.name, status, result.exit_code), file=sys.stderr)
+            return GateResult(gate.name, status, result.exit_code, reason), False
+        print("Quality gate {!r} passed.".format(gate.name), file=sys.stderr)
+    return None, False
+
+
+def run_gates_only(
+    gates: Sequence[Gate],
+    workdir: Path,
+    wall_timeout: float,
+    journal: Journal,
+    run_id: str,
+    protected: Sequence[ProtectedFile],
+    shutdown: Optional[ShutdownHandoff] = None,
+) -> int:
+    """Verify an existing worktree with the frozen gate list and no model."""
+    started = time.monotonic()
+    gate_failure, harness_failure = run_gates(
+        gates, workdir, started + wall_timeout, protected, shutdown
+    )
+    if gate_failure is None:
+        exit_code, status, failure_class, reason = 0, "passed", "success", "gates_passed"
+    elif gate_failure.status == "abort":
+        exit_code, status = EXIT_ABORT, "abort"
+        failure_class, reason = "user_abort", gate_failure.reason_id
+    elif harness_failure:
+        exit_code, status = EXIT_HARNESS, gate_failure.status
+        failure_class, reason = "harness_error", gate_failure.reason_id
+    elif gate_failure.reason_id == "wall_timeout":
+        exit_code, status = EXIT_TIMEOUT, "timeout"
+        failure_class, reason = "timeout", "wall_timeout"
+    else:
+        exit_code, status = EXIT_QUALITY, gate_failure.status
+        failure_class, reason = "quality_failure", gate_failure.reason_id
+    journal.write({
+        "event": "gates_only",
+        "run_id": run_id,
+        "ts": round(time.time(), 3),
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "task": "gates-only",
+        "status": status,
+        "exit_code": gate_failure.exit_code if gate_failure else 0,
+        "failure_class": failure_class,
+        "reason_id": reason,
+        "final_exit_code": exit_code,
+    })
+    return exit_code
+
+
+def parse_args() -> argparse.Namespace:
+    lane_help = "; ".join(
+        "{}: claude {}/{} vs codex {}/{}".format(
+            lane, spec["claude"][0], spec["claude"][1], spec["codex"][0], spec["codex"][1]
+        )
+        for lane, spec in LANES.items()
+    )
+    parser = argparse.ArgumentParser(
+        description="Subscription-only Claude/Codex runner with bounded classified fallback",
+        epilog="Lanes -- " + lane_help,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("prompt", nargs="?", help="Complete self-contained task prompt")
+    parser.add_argument(
+        "--doctor",
+        choices=("any", "both"),
+        metavar="REQUIREMENT",
+        help="Check subscription CLI installation/auth; REQUIREMENT is any or both",
+    )
+    parser.add_argument(
+        "--doctor-timeout",
+        type=doctor_timeout,
+        default=DEFAULT_DOCTOR_TIMEOUT,
+        help="Per-vendor auth-status timeout (maximum 30 seconds)",
+    )
+    parser.add_argument("--prompt-file", type=Path, help="Read the task prompt from a file")
+    parser.add_argument("--workdir", type=Path, default=Path.cwd())
+    parser.add_argument("--task", choices=("implement", "plan", "review", "inspect"), default="implement")
+    parser.add_argument("--lane", choices=LANE_CHOICES, help="Starting capability lane")
+    parser.add_argument("--tier", choices=LANE_CHOICES, help="Deprecated alias for --lane")
+    parser.add_argument("--primary", choices=("auto", "claude", "codex"), default="auto")
+    parser.add_argument(
+        "--final-output-only",
+        action="store_true",
+        help="Emit only a native-isolated final answer (inspect/review tasks only)",
+    )
+    parser.add_argument("--no-escalate", action="store_true", help="Run only the selected lane pair")
+    parser.add_argument("--max-turns", type=positive_int, default=30, help="Claude turn cap")
+    parser.add_argument("--max-attempts", type=positive_int, default=DEFAULT_MAX_ATTEMPTS)
+    parser.add_argument("--attempt-timeout", type=positive_float, default=DEFAULT_ATTEMPT_TIMEOUT)
+    parser.add_argument("--wall-timeout", type=positive_float, default=DEFAULT_WALL_TIMEOUT)
+    parser.add_argument("--gate-file", type=Path, help="Versioned JSON quality-gate configuration")
+    parser.add_argument(
+        "--gate",
+        action="append",
+        default=[],
+        metavar="NAME=JSON_ARGV",
+        help='Repeatable argv gate, for example --gate \'tests=["python3","-m","unittest"]\'',
+    )
+    parser.add_argument("--gate-timeout", type=positive_float, default=DEFAULT_GATE_TIMEOUT)
+    parser.add_argument(
+        "--gates-only",
+        action="store_true",
+        help="Run the configured quality gates in the workdir and exit; no model is launched",
+    )
+    parser.add_argument("--max-quality-failures", type=positive_int, default=DEFAULT_MAX_QUALITY_FAILURES)
+    parser.add_argument("--journal", type=Path, help="Override the JSONL journal path")
+    parser.add_argument("--no-journal", action="store_true")
+    parser.add_argument("--journal-max-bytes", type=journal_size, default=DEFAULT_JOURNAL_MAX_BYTES)
+    parser.add_argument("--journal-backups", type=int, choices=range(0, 10), default=DEFAULT_JOURNAL_BACKUPS)
+    parser.add_argument("--circuit-state", type=Path, help="Override persistent circuit state path")
+    parser.add_argument("--no-circuit", action="store_true")
+    parser.add_argument("--circuit-cooldown", type=nonnegative_float, default=DEFAULT_CIRCUIT_COOLDOWN)
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def select_lane(args: argparse.Namespace) -> Optional[str]:
+    lane = resolve_lane(args.lane) if args.lane else None
+    tier = resolve_lane(args.tier) if args.tier else None
+    if lane and tier and lane != tier:
+        print(
+            "Conflicting lanes: --lane {} resolves to {} but --tier {} resolves to {}. Pass only --lane.".format(
+                args.lane, lane, args.tier, tier
+            ),
+            file=sys.stderr,
+        )
+        return None
+    return lane or tier or DEFAULT_LANE
+
+
+def print_dry_run(
+    attempts: List[Tuple[str, str]],
+    prompt: str,
+    workdir: Path,
+    task: str,
+    max_turns: int,
+    lane: str,
+    no_escalate: bool,
+    gates: Sequence[Gate],
+    final_output_only: bool,
+) -> None:
+    summary = " -> ".join(
+        "{}/{} ({} {}/{})".format(lane_name, engine, engine, *LANES[lane_name][engine])
+        for lane_name, engine in attempts
+    )
+    mode = "no-escalate, single lane" if no_escalate else "escalation enabled"
+    print("Starting lane {} / task {} ({}) attempt chain: {}".format(lane, task, mode, summary), file=sys.stderr)
+    for idx, (lane_name, engine) in enumerate(attempts):
+        model, effort = LANES[lane_name][engine]
+        attempt_prompt = prompt if idx == 0 else (ESCALATION_NOTICE + prompt)
+        print(
+            "[{}/{}] lane={} vendor={} model={} effort={}".format(
+                idx + 1, len(attempts), lane_name, engine, model, effort
+            ),
+            file=sys.stderr,
+        )
+        cmd = build_command(
+            engine,
+            model,
+            effort,
+            attempt_prompt,
+            workdir,
+            task,
+            max_turns,
+            final_output_only,
+        )
+        run(cmd, workdir, True)
+    if task == "implement":
+        for gate in gates:
+            print("quality-gate name={!r} timeout={} argv={}".format(gate.name, gate.timeout_seconds, shlex.join(gate.argv)), file=sys.stderr)
+
+
+def _attempt_record(
+    run_id: str,
+    index: int,
+    total: int,
+    lane: str,
+    engine: str,
+    model: str,
+    effort: str,
+    task: str,
+    result: RunResult,
+    failure: Optional[Failure],
+) -> Dict[str, Any]:
+    return {
+        "event": "attempt",
+        "run_id": run_id,
+        "ts": round(time.time(), 3),
+        "attempt_idx": index,
+        "total_attempts": total,
+        "lane": lane,
+        "vendor": engine,
+        "model": model,
+        "effort": effort,
+        "task": task,
+        "duration_seconds": round(result.duration_seconds, 3),
+        "exit_code": result.exit_code,
+        "failure_class": failure.failure_class if failure else None,
+        "reason_id": failure.reason_id if failure else "success",
+    }
+
+
+def execute_chain(
+    attempts: List[Tuple[str, str]],
+    prompt: str,
+    workdir: Path,
+    task: str,
+    max_turns: int,
+    attempt_timeout: float,
+    wall_timeout: float,
+    max_quality_failures: int,
+    gates: Sequence[Gate],
+    journal: Journal,
+    circuit: CircuitBreaker,
+    run_id: str,
+    starting_lane: str,
+    primary: str,
+    protected_gates: Sequence[ProtectedFile],
+    shutdown: Optional[ShutdownHandoff] = None,
+    final_output_only: bool = False,
+) -> ChainOutcome:
+    started = time.monotonic()
+    deadline = started + wall_timeout
+    blocked = circuit.blocked_vendors()
+    attempts_run = 0
+    quality_failures = 0
+    saw_quality_failure = False
+    final_class = "unavailable"
+    final_reason = "attempt_chain_exhausted"
+    next_notice = None  # type: Optional[str]
+    final_exit = EXIT_UNAVAILABLE
+    successful_vendor = None  # type: Optional[str]
+    successful_output = None  # type: Optional[bytes]
+
+    try:
+        for planned_index, (lane_name, engine) in enumerate(attempts, 1):
+            if engine in blocked:
+                print("Skipping {}/{} because its quota/auth circuit is in cooldown.".format(lane_name, engine), file=sys.stderr)
+                journal.write({
+                    "event": "circuit_skip",
+                    "run_id": run_id,
+                    "ts": round(time.time(), 3),
+                    "attempt_idx": planned_index,
+                    "lane": lane_name,
+                    "vendor": engine,
+                    "task": task,
+                    "reason_id": "vendor_circuit_open",
+                })
+                continue
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                final_class = "timeout"
+                final_reason = "wall_timeout"
+                final_exit = EXIT_TIMEOUT
+                break
+            timeout = min(attempt_timeout, remaining)
+            model, effort = LANES[lane_name][engine]
+            if attempts_run == 0 and next_notice is None:
+                attempt_prompt = prompt
+            elif next_notice is not None:
+                attempt_prompt = next_notice + prompt
+                next_notice = None
+            else:
+                attempt_prompt = ESCALATION_NOTICE + prompt
+            if planned_index > 1:
+                print(
+                    "Continuing with lane {} / {}/{} (effort {}). The worktree may contain partial work.".format(
+                        lane_name, engine, model, effort
+                    ),
+                    file=sys.stderr,
+                )
+            cmd = build_command(
+                engine,
+                model,
+                effort,
+                attempt_prompt,
+                workdir,
+                task,
+                max_turns,
+                final_output_only,
+            )
+            result = run(
+                cmd,
+                workdir,
+                False,
+                timeout,
+                shutdown,
+                engine if final_output_only else None,
+            )
+            attempts_run += 1
+            failure = classify_failure(result) if result.exit_code != 0 else None
+            journal.write(_attempt_record(
+                run_id, planned_index, len(attempts), lane_name, engine, model, effort, task, result, failure
+            ))
+
+            if failure is not None:
+                final_class = failure.failure_class
+                final_reason = failure.reason_id
+                if result.timed_out and time.monotonic() >= deadline:
+                    final_exit = EXIT_TIMEOUT
+                    final_class = "timeout"
+                    final_reason = "wall_timeout"
+                    break
+                if failure.failure_class == "harness_error":
+                    final_exit = EXIT_HARNESS
+                    break
+                if failure.failure_class == "user_abort":
+                    final_exit = EXIT_ABORT
+                    break
+                if failure.failure_class == "quota_or_auth":
+                    blocked.add(engine)
+                    circuit.block(engine, failure.reason_id)
+                    print(
+                        "Blocking vendor {} for this run after quota/auth failure ({}).".format(engine, failure.reason_id),
+                        file=sys.stderr,
+                    )
+                continue
+
+            if task != "implement" or not gates:
+                final_exit = 0
+                final_class = "success"
+                final_reason = "success"
+                successful_vendor = engine
+                successful_output = result.final_output
+                break
+
+            gate_failure, harness_failure = run_gates(
+                gates, workdir, deadline, protected_gates, shutdown
+            )
+            if gate_failure is None:
+                final_exit = 0
+                final_class = "success"
+                final_reason = "gates_passed"
+                successful_vendor = engine
+                break
+            if gate_failure.status == "abort":
+                final_exit = EXIT_ABORT
+                final_class = "user_abort"
+                final_reason = gate_failure.reason_id
+                break
+            if harness_failure:
+                final_exit = EXIT_HARNESS
+                final_class = "harness_error"
+                final_reason = gate_failure.reason_id
+                journal.write({
+                    "event": "quality_gate",
+                    "run_id": run_id,
+                    "ts": round(time.time(), 3),
+                    "attempt_idx": planned_index,
+                    "status": gate_failure.status,
+                    "exit_code": gate_failure.exit_code,
+                    "failure_class": "harness_error",
+                    "reason_id": gate_failure.reason_id,
+                })
+                break
+            if gate_failure.reason_id == "wall_timeout":
+                final_exit = EXIT_TIMEOUT
+                final_class = "timeout"
+                final_reason = "wall_timeout"
+                break
+            quality_failures += 1
+            saw_quality_failure = True
+            final_exit = EXIT_QUALITY
+            final_class = "quality_failure"
+            final_reason = gate_failure.reason_id
+            journal.write({
+                "event": "quality_gate",
+                "run_id": run_id,
+                "ts": round(time.time(), 3),
+                "attempt_idx": planned_index,
+                "status": gate_failure.status,
+                "exit_code": gate_failure.exit_code,
+                "failure_class": "quality_failure",
+                "reason_id": gate_failure.reason_id,
+            })
+            if quality_failures >= max_quality_failures:
+                print("Maximum quality failures ({}) reached.".format(max_quality_failures), file=sys.stderr)
+                break
+            next_notice = QUALITY_NOTICE.format(
+                name=gate_failure.name,
+                status=gate_failure.status,
+                exit_code=gate_failure.exit_code,
+            )
+        else:
+            final_exit = EXIT_QUALITY if saw_quality_failure else EXIT_UNAVAILABLE
+            final_class = "quality_failure" if saw_quality_failure else "unavailable"
+            final_reason = "quality_chain_exhausted" if saw_quality_failure else "attempt_chain_exhausted"
+        return ChainOutcome(final_exit, successful_vendor, successful_output)
+    finally:
+        journal.write({
+            "event": "run_end",
+            "run_id": run_id,
+            "ts": round(time.time(), 3),
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "final_exit_code": final_exit,
+            "final_failure_class": final_class,
+            "reason_id": final_reason,
+            "attempts_run": attempts_run,
+            "total_attempts": len(attempts),
+            "starting_lane": starting_lane,
+            "task": task,
+            "primary": primary,
+        })
+
+
+def _configured_path(cli_path: Optional[Path], env_name: str, default: str, disabled: bool) -> Optional[Path]:
+    if disabled:
+        return None
+    if cli_path is not None:
+        return Path(os.path.abspath(str(cli_path.expanduser())))
+    env_value = os.environ.get(env_name)
+    if env_value is not None:
+        return Path(os.path.abspath(str(Path(env_value).expanduser()))) if env_value else None
+    return Path(os.path.abspath(str(Path(default).expanduser())))
+
+
+class ResultAttestation:
+    """Authenticated, close-on-exec result pipe supplied by hermes-coder-flow."""
+
+    def __init__(self, fd: int, token: str, flow_run_id: str, stage: str) -> None:
+        self.fd = fd
+        self.token = token
+        self.flow_run_id = flow_run_id
+        self.stage = stage
+
+    @classmethod
+    def from_environment(cls) -> Optional["ResultAttestation"]:
+        values = (
+            os.environ.get(RESULT_FD_ENV),
+            os.environ.get(RESULT_TOKEN_ENV),
+            os.environ.get(FLOW_RUN_ENV),
+            os.environ.get(FLOW_STAGE_ENV),
+        )
+        if values[0] is None and values[1] is None:
+            return None
+        fd_text, token, flow_run_id, stage = values
+        if (
+            fd_text is None
+            or token is None
+            or flow_run_id is None
+            or stage is None
+            or RESULT_TOKEN_RE.fullmatch(token) is None
+            or RUN_ID_RE.fullmatch(flow_run_id) is None
+            or STAGE_ID_RE.fullmatch(stage) is None
+        ):
+            raise ValueError("invalid hermes-coder result channel identity")
+        try:
+            fd = int(fd_text)
+        except ValueError:
+            raise ValueError("invalid hermes-coder result file descriptor")
+        if fd < 3:
+            raise ValueError("unsafe hermes-coder result file descriptor")
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            raise ValueError("unavailable hermes-coder result file descriptor: {}".format(exc))
+        if not stat.S_ISFIFO(info.st_mode):
+            raise ValueError("hermes-coder result channel is not a pipe")
+        os.set_inheritable(fd, False)
+        return cls(fd, token, flow_run_id, stage)
+
+    def emit(self, coder_run_id: str, outcome: ChainOutcome) -> bool:
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "kind": RESULT_KIND,
+            "flow_run_id": self.flow_run_id,
+            "stage": self.stage,
+            "token": self.token,
+            "coder_run_id": coder_run_id,
+            "exit_code": outcome.exit_code,
+            "vendor": outcome.vendor,
+        }
+        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(self.fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError("short write to result channel")
+                offset += written
+            return True
+        except OSError as exc:
+            print("Cannot write secure result attestation: {}".format(exc), file=sys.stderr)
+            return False
+        finally:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+
+
+def main() -> int:
+    active = os.environ.get(RECURSION_ENV)
+    if active:
+        print(
+            "hermes-coder refuses recursive model orchestration while run {} is active".format(active[:12]),
+            file=sys.stderr,
+        )
+        return EXIT_RECURSION
+
+    try:
+        attestation = ResultAttestation.from_environment()
+    except ValueError as exc:
+        print("Invalid secure result channel: {}".format(exc), file=sys.stderr)
+        return EXIT_HARNESS
+
+    try:
+        shutdown = ShutdownHandoff.from_environment()
+    except ValueError as exc:
+        print("Invalid secure shutdown channel: {}".format(exc), file=sys.stderr)
+        return EXIT_HARNESS
+
+    previous_handlers = {}  # type: Dict[int, Any]
+
+    def terminate(signum: int, _frame: Any) -> None:
+        shutdown.request_from_signal(signum)
+
+    for signum in (
+        signal.SIGINT,
+        signal.SIGTERM,
+        getattr(signal, "SIGHUP", signal.SIGTERM),
+    ):
+        if signum in previous_handlers:
+            continue
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, terminate)
+    shutdown.start()
+    try:
+        return _main_body(attestation, shutdown)
+    finally:
+        shutdown.acknowledge()
+        shutdown.close()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
+def _main_body(
+    attestation: Optional[ResultAttestation], shutdown: ShutdownHandoff
+) -> int:
+    if shutdown.requested():
+        return EXIT_ABORT
+    args = parse_args()
+    if args.doctor is not None:
+        if args.prompt is not None or args.prompt_file is not None or args.gates_only or args.dry_run:
+            print("--doctor accepts no prompt and cannot be combined with gates-only or dry-run", file=sys.stderr)
+            return 2
+        return run_doctor(args.doctor, args.doctor_timeout, shutdown)
+    if args.final_output_only and (args.gates_only or args.task not in ("inspect", "review")):
+        print(
+            "--final-output-only is valid only for inspect or review model tasks",
+            file=sys.stderr,
+        )
+        return 2
+    if args.gates_only:
+        if args.prompt or args.prompt_file:
+            print("--gates-only runs no model and accepts no prompt", file=sys.stderr)
+            return 2
+    elif bool(args.prompt) == bool(args.prompt_file):
+        print("Provide exactly one of PROMPT or --prompt-file", file=sys.stderr)
+        return 2
+
+    lane = select_lane(args)
+    if lane is None:
+        return 2
+    workdir = args.workdir.expanduser().resolve()
+    if not workdir.is_dir():
+        print("Workdir does not exist: {}".format(workdir), file=sys.stderr)
+        return 2
+
+    if args.gates_only:
+        prompt = ""
+    elif args.prompt:
+        prompt = args.prompt
+    else:
+        prompt_path = args.prompt_file.expanduser().resolve()
+        try:
+            prompt = prompt_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            print("Cannot read prompt file {}: {}".format(prompt_path, exc), file=sys.stderr)
+            return 2
+
+    primary = args.primary
+    if primary == "auto":
+        primary = "codex" if args.task in ("inspect", "review") else "claude"
+    fallback = "codex" if primary == "claude" else "claude"
+    chain = build_escalation_chain(lane, args.no_escalate)
+    attempts = build_attempts(chain, primary, fallback)[: args.max_attempts]
+
+    gate_file = args.gate_file.expanduser().resolve() if args.gate_file else None
+    try:
+        gates = load_gates(gate_file, args.gate, args.gate_timeout, workdir)
+    except FileNotFoundError as exc:
+        print("Gate configuration harness error: {}".format(exc), file=sys.stderr)
+        return EXIT_HARNESS
+    except ValueError as exc:
+        print("Invalid gate configuration: {}".format(exc), file=sys.stderr)
+        return 2
+
+    if args.gates_only and not gates:
+        print("--gates-only requires at least one configured gate", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        if args.gates_only:
+            for gate in gates:
+                print(
+                    "quality-gate name={!r} timeout={} argv={}".format(
+                        gate.name, gate.timeout_seconds, shlex.join(gate.argv)
+                    ),
+                    file=sys.stderr,
+                )
+        else:
+            print_dry_run(
+                attempts,
+                prompt,
+                workdir,
+                args.task,
+                args.max_turns,
+                lane,
+                args.no_escalate,
+                gates,
+                args.final_output_only,
+            )
+        return 0
+
+    try:
+        protected_gates = snapshot_gate_integrity(gates, workdir, gate_file)
+    except OSError as exc:
+        print("Gate integrity snapshot failed before model launch: {}".format(exc), file=sys.stderr)
+        return EXIT_HARNESS
+
+    journal_path = _configured_path(args.journal, "HERMES_CODER_LOG", "~/.hermes/logs/hermes-coder.jsonl", args.no_journal)
+    circuit_path = _configured_path(
+        args.circuit_state, "HERMES_CODER_STATE", "~/.hermes/state/hermes-coder-circuit.json", args.no_circuit
+    )
+    journal = Journal(journal_path, args.journal_max_bytes, args.journal_backups)
+    run_id = uuid.uuid4().hex
+    # Vendor processes and quality gates inherit this guard. A model hook can
+    # therefore not recursively launch another hermes-coder (or flow) unless
+    # it deliberately strips the environment, which is outside this CLI's
+    # process-tree contract.
+    os.environ[RECURSION_ENV] = run_id
+    if args.gates_only:
+        # No vendor runs, so the quota/auth circuit is neither read nor written.
+        exit_code = run_gates_only(
+            gates, workdir, args.wall_timeout, journal, run_id, protected_gates, shutdown
+        )
+        outcome = ChainOutcome(exit_code, None)
+        if shutdown.requested():
+            outcome = ChainOutcome(EXIT_ABORT, None)
+            exit_code = EXIT_ABORT
+        if attestation is not None and not attestation.emit(run_id, outcome):
+            return EXIT_HARNESS
+        return exit_code
+    circuit = CircuitBreaker(circuit_path, args.circuit_cooldown)
+    outcome = execute_chain(
+        attempts,
+        prompt,
+        workdir,
+        args.task,
+        args.max_turns,
+        args.attempt_timeout,
+        args.wall_timeout,
+        args.max_quality_failures,
+        gates,
+        journal,
+        circuit,
+        run_id,
+        lane,
+        primary,
+        protected_gates,
+        shutdown,
+        args.final_output_only,
+    )
+    if shutdown.requested():
+        outcome = ChainOutcome(EXIT_ABORT, None)
+    if attestation is not None and not attestation.emit(run_id, outcome):
+        return EXIT_HARNESS
+    if outcome.exit_code == 0 and args.final_output_only:
+        if outcome.final_output is None:
+            print("Final output isolation produced no successful answer.", file=sys.stderr)
+            return EXIT_HARNESS
+        _write_live(sys.stdout, outcome.final_output)
+    return outcome.exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

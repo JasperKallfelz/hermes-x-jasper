@@ -2,31 +2,39 @@
 # ---------------------------------------------------------------------------
 # Hermes CLI Starter — installer
 #
-# Clones upstream Hermes Agent at a pinned, tested commit, runs the upstream
-# installer, applies this starter's feature patch, and copies EXAMPLE files
-# into place. It never writes secrets and never overwrites an existing config
-# without asking.
+# Optionally installs the vendored coding wrappers, clones upstream Hermes
+# Agent at a pinned commit, applies this starter's patch, runs the upstream
+# installer, and copies EXAMPLE files into place. It never writes secrets and
+# never overwrites an existing config without asking.
 #
 # Safe to re-run: every step checks its own end state first.
 #
 #   ./setup.sh --dry-run          # print the plan, change nothing
 #   ./setup.sh                    # install
 #   ./setup.sh --skip-voice       # skip the optional voice/TTS dependencies
+#   ./setup.sh --skip-coder-stack # do not install the Claude/Codex wrappers
+#   ./setup.sh --coder-bin-dir ~/.local/bin
+#   ./setup.sh --replace-coder-stack  # back up and replace wrapper conflicts
 #   ./setup.sh --install-dir ~/src/hermes-agent --hermes-home ~/.hermes
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 UPSTREAM_REPO="https://github.com/NousResearch/hermes-agent"
-# Hermes Agent v0.17.0 — the commit this starter's patch is written against.
-PINNED_COMMIT="b56aafc2ef6befd96ecf00bf4788031cf4be169b"
+# Hermes Agent v0.19.0 (release tag v2026.7.20) — the commit this starter's
+# patch is written against. Bump this in setup.sh, verify.sh, ci.yml, README.md
+# and tests/test_setup.py together (see CONTRIBUTING.md).
+PINNED_COMMIT="3ef6bbd201263d354fd83ec55b3c306ded2eb72a"
 
 STARTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="$STARTER_DIR/patches/voice-and-desktop-features.patch"
 
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HOME/hermes-agent}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+CODER_BIN_DIR="${HERMES_CODER_BIN_DIR:-$HOME/.local/bin}"
 DRY_RUN=0
 SKIP_VOICE=0
+INSTALL_CODER_STACK=1
+REPLACE_CODER_STACK=0
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
 info()  { printf '%s==>%s %s\n' "$CYAN" "$NC" "$*"; }
@@ -44,23 +52,27 @@ run() {
 }
 
 usage() {
-  sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run)      DRY_RUN=1; shift ;;
-    --skip-voice)   SKIP_VOICE=1; shift ;;
-    --install-dir)  INSTALL_DIR="${2:?--install-dir needs a path}"; shift 2 ;;
-    --hermes-home)  HERMES_HOME="${2:?--hermes-home needs a path}"; shift 2 ;;
-    -h|--help)      usage ;;
-    *)              die "unknown option: $1 (try --help)" ;;
+    --dry-run)             DRY_RUN=1; shift ;;
+    --skip-voice)          SKIP_VOICE=1; shift ;;
+    --skip-coder-stack)    INSTALL_CODER_STACK=0; shift ;;
+    --replace-coder-stack) REPLACE_CODER_STACK=1; shift ;;
+    --install-dir)         INSTALL_DIR="${2:?--install-dir needs a path}"; shift 2 ;;
+    --hermes-home)         HERMES_HOME="${2:?--hermes-home needs a path}"; shift 2 ;;
+    --coder-bin-dir)       CODER_BIN_DIR="${2:?--coder-bin-dir needs a path}"; shift 2 ;;
+    -h|--help)             usage ;;
+    *)                     die "unknown option: $1 (try --help)" ;;
   esac
 done
 
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 HERMES_HOME="${HERMES_HOME/#\~/$HOME}"
+CODER_BIN_DIR="${CODER_BIN_DIR/#\~/$HOME}"
 HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
 
 echo
@@ -70,15 +82,24 @@ echo "  commit      : $PINNED_COMMIT"
 echo "  install dir : $INSTALL_DIR"
 echo "  hermes home : $HERMES_HOME"
 echo "  executable  : $HERMES_BIN"
+if [ "$INSTALL_CODER_STACK" -eq 1 ]; then
+  echo "  coder bin   : $CODER_BIN_DIR"
+else
+  echo "  coder stack : skipped"
+fi
 [ "$DRY_RUN" -eq 1 ] && warn "dry run — nothing will be written"
 echo
 
 # --- 1. prerequisites ------------------------------------------------------
 info "Checking prerequisites"
-for cmd in git python3; do
+REQUIRED_COMMANDS=(git python3)
+if [ "$INSTALL_CODER_STACK" -eq 1 ]; then
+  REQUIRED_COMMANDS+=(cmp install)
+fi
+for cmd in "${REQUIRED_COMMANDS[@]}"; do
   command -v "$cmd" >/dev/null 2>&1 || die "$cmd is required but not on PATH"
 done
-ok "git, python3"
+ok "${REQUIRED_COMMANDS[*]}"
 
 PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3, 11) else 0)')
 [ "$PY_OK" = "1" ] || die "Python 3.11+ is required (found $(python3 -V 2>&1))"
@@ -89,7 +110,79 @@ command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg" \
 
 [ -f "$PATCH_FILE" ] || die "patch not found: $PATCH_FILE"
 
-# --- 2. clone or update upstream at the pinned commit ----------------------
+# Validate every wrapper target before setup makes any changes. A pre-existing
+# different file is user-owned until the operator explicitly opts into a
+# timestamped backup and replacement.
+if [ "$INSTALL_CODER_STACK" -eq 1 ]; then
+  [ -d "$CODER_BIN_DIR" ] || [ ! -e "$CODER_BIN_DIR" ] \
+    || die "$CODER_BIN_DIR exists but is not a directory"
+  [ ! -d "$CODER_BIN_DIR" ] || [ -w "$CODER_BIN_DIR" ] \
+    || die "$CODER_BIN_DIR is not writable"
+  for name in hermes-coder hermes-coder-flow; do
+    source_file="$STARTER_DIR/coder-stack/bin/$name"
+    target_file="$CODER_BIN_DIR/$name"
+    [ -f "$source_file" ] && [ ! -L "$source_file" ] \
+      || die "vendored coder wrapper is missing or unsafe: $source_file"
+    if [ -e "$target_file" ] || [ -L "$target_file" ]; then
+      [ -f "$target_file" ] && [ ! -L "$target_file" ] \
+        || die "$target_file exists but is not a regular file; move it aside manually"
+      if ! cmp -s "$source_file" "$target_file" && [ "$REPLACE_CODER_STACK" -ne 1 ]; then
+        die "$target_file differs from the vendored wrapper. Re-run with --replace-coder-stack to back it up first, or use --coder-bin-dir."
+      fi
+    fi
+  done
+fi
+
+# --- 2. subscription-backed coding wrappers -------------------------------
+if [ "$INSTALL_CODER_STACK" -eq 0 ]; then
+  info "Skipping coder stack (--skip-coder-stack)"
+else
+  info "Installing subscription-backed coding wrappers"
+  run mkdir -p "$CODER_BIN_DIR"
+  for name in hermes-coder hermes-coder-flow; do
+    source_file="$STARTER_DIR/coder-stack/bin/$name"
+    target_file="$CODER_BIN_DIR/$name"
+    if [ -f "$target_file" ] && cmp -s "$source_file" "$target_file"; then
+      if [ -x "$target_file" ]; then
+        ok "$name already installed and current"
+      else
+        run chmod 755 "$target_file"
+        ok "$name content is current; executable mode restored"
+      fi
+      continue
+    fi
+
+    if [ -e "$target_file" ]; then
+      backup_file="$target_file.bak-$(date +%Y%m%d%H%M%S)"
+      backup_number=0
+      while [ -e "$backup_file" ]; do
+        backup_number=$((backup_number + 1))
+        backup_file="$target_file.bak-$(date +%Y%m%d%H%M%S)-$backup_number"
+      done
+      run cp -p "$target_file" "$backup_file"
+      warn "backed up differing $name to $backup_file"
+    fi
+    run install -m 755 "$source_file" "$target_file"
+    ok "installed $target_file"
+  done
+fi
+
+info "Checking optional subscription CLI requirements"
+if command -v claude >/dev/null 2>&1; then
+  ok "Claude Code CLI found"
+else
+  warn "Claude Code CLI not found — install it separately for Claude subscription runs"
+fi
+if command -v codex >/dev/null 2>&1; then
+  ok "Codex CLI found"
+else
+  warn "Codex CLI not found — install it separately for Codex subscription runs"
+fi
+echo "  setup does not install or authenticate either CLI"
+echo "  check auth yourself: claude auth status"
+echo "                       codex login status"
+
+# --- 3. clone or update upstream at the pinned commit ----------------------
 info "Fetching upstream at pinned commit"
 if [ -d "$INSTALL_DIR/.git" ]; then
   ok "repo already present: $INSTALL_DIR"
@@ -115,7 +208,7 @@ else
   echo "  would checkout: $PINNED_COMMIT"
 fi
 
-# --- 3. apply the feature patch (idempotent) ------------------------------
+# --- 4. apply the feature patch (idempotent) ------------------------------
 info "Applying feature patch"
 if [ "$DRY_RUN" -eq 1 ]; then
   if git -C "$INSTALL_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
@@ -139,7 +232,7 @@ else
      If conflict markers were left behind: git -C '$INSTALL_DIR' checkout -- ."
 fi
 
-# --- 4. upstream install ---------------------------------------------------
+# --- 5. upstream install ---------------------------------------------------
 # setup-hermes.sh is upstream's own installer: it creates venv/bin/hermes
 # plus the venv/dependencies and seeds its own template files. We deliberately
 # do not reimplement any of it, but a present executable means this step's end
@@ -158,7 +251,7 @@ else
   run "$INSTALL_DIR/venv/bin/pip" install --quiet -e "$INSTALL_DIR"
 fi
 
-# --- 5. optional voice dependencies ---------------------------------------
+# --- 6. optional voice dependencies ---------------------------------------
 if [ "$SKIP_VOICE" -eq 1 ]; then
   info "Skipping voice dependencies (--skip-voice)"
 else
@@ -181,7 +274,7 @@ else
   fi
 fi
 
-# --- 6. example files (never clobber real config) -------------------------
+# --- 7. example files (never clobber real config) -------------------------
 info "Seeding config from examples"
 run mkdir -p "$HERMES_HOME"
 
@@ -223,6 +316,8 @@ Next steps:
   2. Set your Telegram/Discord allowlist in the same file — an agent with no
      allowlist will talk to anyone who finds it.
   3. Start it:  $HERMES_BIN
+  4. The optional coding wrappers use your separately installed Claude/Codex
+     subscriptions. Check them with: claude auth status; codex login status
 
 Docs: $STARTER_DIR/README.md · $STARTER_DIR/docs/TROUBLESHOOTING.md
 EOF

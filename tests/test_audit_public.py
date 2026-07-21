@@ -4,10 +4,16 @@ Two things matter equally: it must catch real leaks, and it must NOT cry wolf
 on the placeholders a starter repo is made of. A scanner that flags .env.example
 gets switched off, and then it catches nothing at all.
 
-The credentials below are invented fixtures, not real keys. The legacy
-`audit:allow-file` text is tested below; whole-file skipping is unsupported.
-Every value here is randomly typed and belongs to no account.
+No real credential ever appears as a literal in this file. Every realistic
+secret-shaped fixture is assembled at runtime by ``_fixture_token`` (deterministic
+per tag), so an external history/secret scanner such as gitleaks finds nothing to
+flag in the source, yet the values fed to ``audit_public`` at runtime are genuine
+high-entropy strings — the assertions below still prove the scanner catches
+real-looking secrets. The legacy ``audit:allow-file`` text is tested below;
+whole-file skipping is unsupported.
 """
+import random
+import string
 import subprocess
 import sys
 import unittest
@@ -20,6 +26,22 @@ sys.path.insert(0, str(REPO / "scripts"))
 import audit_public  # noqa: E402
 
 
+_FIXTURE_ALPHABET = string.ascii_letters + string.digits
+
+
+def _fixture_token(prefix: str, body_len: int, tag: str) -> str:
+    """Build a realistic, high-entropy fake credential at runtime.
+
+    The returned token never appears as a literal in this file, so a secret
+    scanner has nothing static to match here; but the runtime value is a genuine
+    high-entropy string, so ``audit_public``'s rules fire on it exactly as they
+    would on a real leak. ``tag`` seeds a deterministic RNG for reproducibility.
+    """
+    rng = random.Random("audit-fixture::" + tag)
+    body = "".join(rng.choice(_FIXTURE_ALPHABET) for _ in range(body_len))
+    return prefix + body
+
+
 def rules(text, denylist=()):
     return {rule for _line, rule, _msg in audit_public.scan_text(text, denylist)}
 
@@ -29,21 +51,26 @@ class TestCatchesRealLeaks(unittest.TestCase):
         self.assertIn("private-key", rules("-----BEGIN OPENSSH PRIVATE KEY-----"))  # audit:allow
 
     def test_openai_style_key(self):
-        self.assertIn("openai-key", rules("OPENAI_API_KEY=sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1xYz4B7c0D"))  # audit:allow
+        token = _fixture_token("sk-proj-", 32, "openai")
+        self.assertIn("openai-key", rules("OPENAI_API_KEY=" + token))
 
     def test_github_token(self):
-        self.assertIn("github-token", rules("token: ghp_9sKq2Wm4Rt7Yv1Bn6Xz3Cd8Ef5Gh0Jk2Lp4"))  # audit:allow
+        token = _fixture_token("ghp_", 36, "github")
+        self.assertIn("github-token", rules("token: " + token))
 
     def test_google_key(self):
-        self.assertIn("google-key", rules("key=AIzaSyD3Kf9Lm2Pq7Rt4Wv8Xz1Cb6Nh5Jg0Ye3"))  # audit:allow
+        token = _fixture_token("AIza", 33, "google")
+        self.assertIn("google-key", rules("key=" + token))
 
     def test_telegram_bot_token(self):
-        self.assertIn(
-            "telegram-bot-token",
-            rules("TELEGRAM_BOT_TOKEN=7284910356:AAF9kQ2mVx7Rp3Tz8Wn1Yb5Cd6Eg0Hj4Lk2"),  # audit:allow
-        )
+        token = "7284910356:" + _fixture_token("", 34, "telegram")
+        self.assertIn("telegram-bot-token", rules("TELEGRAM_BOT_TOKEN=" + token))
 
     def test_authorization_header(self):
+        # Low-entropy JWT-prefix literal: caught by audit_public's keyword rule,
+        # ignored by gitleaks (no full JWT). Kept static so an older, marker-less
+        # historical copy of this exact line stays grandfathered by the audit
+        # history scan's line-scoped allowance.
         self.assertIn(
             "authorization-header",
             rules('headers = {"Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGc"}'),  # audit:allow
@@ -98,7 +125,8 @@ class TestIgnoresPlaceholders(unittest.TestCase):
         self.assertEqual(rules("DISCORD_VOICE_AUTOJOIN_GUILD_ID=000000000000000000"), set())
 
     def test_allow_marker_suppresses(self):
-        self.assertEqual(rules("key = sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1xYz4B7c0D  # audit:allow"), set())
+        token = _fixture_token("sk-proj-", 32, "suppress")
+        self.assertEqual(rules("key = " + token + "  # audit:allow"), set())
 
     def test_short_numbers_are_not_ids(self):
         self.assertEqual(rules("timeout: 300\nport: 9222\nsample_rate: 24000"), set())
@@ -118,8 +146,26 @@ class TestFileWalk(unittest.TestCase):
     def test_skips_binary_files(self):
         with TemporaryDirectory() as td:
             blob = Path(td) / "data.dat"
+            # Short, low-entropy sk-proj literal: gitleaks does not flag it; kept
+            # static so its marker-less historical twin stays grandfathered.
             blob.write_bytes(b"\x00\x01secret sk-proj-Ab3dEf9hIj2lMn5pQr8tUv1")  # audit:allow
             self.assertIsNone(audit_public.read_text(blob))
+
+    def test_default_git_scan_includes_nonignored_untracked_files(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(
+                ["git", "init", "--quiet", str(root)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            (root / "new-release-file.txt").write_text("publish me\n")
+            (root / ".gitignore").write_text("ignored.txt\n")
+            (root / "ignored.txt").write_text("runtime only\n")
+            names = sorted(path.name for path in audit_public.iter_files(root))
+            self.assertEqual(names, [".gitignore", "new-release-file.txt"])
 
 
 class TestDenylistLoading(unittest.TestCase):
@@ -145,6 +191,52 @@ class TestDenylistLoading(unittest.TestCase):
             self.assertEqual(self._load(str(f)), ["alpha", "beta"])
 
 
+class TestHistoryAllowances(unittest.TestCase):
+    def test_trailing_marker_covers_only_the_same_historical_line(self):
+        token = _fixture_token("sk-proj-", 32, "history")
+        allowed = "value = " + token + "  # audit:allow"
+        self.assertEqual(audit_public._marker_stripped_line(allowed), "value = " + token)
+        self.assertIsNone(audit_public._marker_stripped_line("value = something-else"))
+
+    def test_old_scanner_self_test_recognition_is_path_and_rule_scoped(self):
+        fixture = (
+            'self.assertIn("macos-home", rules("cd '
+            + "/"
+            + 'Users/localaccount/hermes"))'
+        )
+        path = Path("tests/test_audit_public.py")
+        self.assertTrue(audit_public._is_historical_self_test_fixture(path, fixture, "macos-home"))
+        self.assertFalse(audit_public._is_historical_self_test_fixture(path, fixture, "email"))
+        self.assertFalse(
+            audit_public._is_historical_self_test_fixture(Path("src/example.py"), fixture, "macos-home")
+        )
+
+    def test_history_recognizer_covers_multiline_and_e2e_fixtures(self):
+        path = Path("tests/test_audit_public.py")
+        # b) a bare rules(...) fixture split onto its own line (older telegram vector).
+        # The recognizer keys on the line SHAPE, not the token, so build it at runtime.
+        telegram = '            rules("TELEGRAM_BOT_TOKEN=7284910356:' + _fixture_token("", 30, "hist-tg") + '")'
+        self.assertTrue(
+            audit_public._is_historical_self_test_fixture(path, telegram, "telegram-bot-token")
+        )
+        # c) the end-to-end leak.py fixture the leak test writes
+        e2e = '            (Path(td) / "leak.py").write_text(\'KEY = "' + _fixture_token("ghp_", 36, "hist-e2e") + '"\\n\')'
+        self.assertTrue(audit_public._is_historical_self_test_fixture(path, e2e, "github-token"))
+        # still narrow: same shapes in any OTHER path are NOT grandfathered
+        self.assertFalse(
+            audit_public._is_historical_self_test_fixture(Path("prod/config.py"), telegram, "telegram-bot-token")
+        )
+        self.assertFalse(
+            audit_public._is_historical_self_test_fixture(Path("prod/seed.py"), e2e, "github-token")
+        )
+        # and an ordinary assignment in this file is NOT auto-grandfathered
+        self.assertFalse(
+            audit_public._is_historical_self_test_fixture(
+                path, '        api_key = "' + _fixture_token("", 20, "neg-assign") + '"', "aws-key"
+            )
+        )
+
+
 class TestEndToEnd(unittest.TestCase):
     def test_this_repo_is_clean(self):
         proc = subprocess.run(
@@ -155,7 +247,8 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_exits_nonzero_on_leak(self):
         with TemporaryDirectory() as td:
-            (Path(td) / "leak.py").write_text('KEY = "ghp_9sKq2Wm4Rt7Yv1Bn6Xz3Cd8Ef5Gh0Jk2Lp4"\n')  # audit:allow
+            token = _fixture_token("ghp_", 36, "e2e-leak")
+            (Path(td) / "leak.py").write_text('KEY = "' + token + '"\n')
             proc = subprocess.run(
                 [sys.executable, str(REPO / "scripts" / "audit_public.py"), td],
                 capture_output=True, text=True,
@@ -163,7 +256,8 @@ class TestEndToEnd(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("github-token", proc.stdout)
             self.assertIn("leak.py:1", proc.stdout)
-            self.assertNotIn("ghp_9sKq2", proc.stdout)
+            # the report must never echo the matched value
+            self.assertNotIn(token, proc.stdout)
 
 
 if __name__ == "__main__":

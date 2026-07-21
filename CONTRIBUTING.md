@@ -16,15 +16,20 @@ This repo is *not* Hermes Agent. Before you open a PR here, check:
 make verify
 ```
 
-That runs everything CI runs: `bash -n` + shellcheck, `compileall`, the test suite, the leak audit, and `git apply --check` of the patch against a *fresh* clone of the pinned upstream commit (needs network). If `make verify` is green, CI will be too.
+That runs everything CI runs: `bash -n` + shellcheck, `compileall`, the test suite, the leak audit, the gitleaks secret-scan gate (current tree + full history; install gitleaks 8.30.1 to run it locally), and `git apply --check` of the patch against a *fresh* clone of the pinned upstream commit (needs network). If `make verify` is green, CI will be too.
 
 ## The rules that actually matter
 
 **1. No personal data. Ever.**
 
-No names, emails, absolute home paths (`/Users/...`, `/home/...`), bot tokens, API keys, Discord/Telegram IDs, chat logs. Not in code, not in the patch, not in a comment, not in a commit message.
+No names, emails, absolute home paths (`/Users/...`, `/home/...`), bot tokens, provider API credentials, numeric Discord or Telegram IDs, or chat logs. Not in code, not in the patch, not in a comment, not in a commit message.
 
-`make audit` enforces this and runs in CI. Placeholders are what you want instead:
+`make audit` (the custom scanner) **and** `make gitleaks` (current tree + full
+history) both enforce this and run in CI. The scanner's own test vectors are
+assembled at runtime so no static secret ever lands in the tree; the only
+historical exceptions are narrow, rule-bound, commit+path-scoped gitleaks
+allowlists for a fixed set of old commits — never a blanket test-directory or
+global allowlist (see `.gitleaks.toml`). Placeholders are what you want instead:
 
 - `user@example.com`, `<YOUR_TOKEN>`, `~/hermes-agent`, empty `KEY=` values
 - Real names of technologies and vendors (Discord, Edge TTS, Parakeet) are fine — those are not personal data.
@@ -53,7 +58,7 @@ cd ~/hermes-cli-starter && make verify
 
 Then read your own diff before you commit it. A patch generated from a working tree picks up whatever else is in that tree — that is exactly how a home path or a bot token gets published.
 
-If you bump the pinned commit, update it in **all** of: `setup.sh`, `verify.sh`, `.github/workflows/ci.yml`, and `README.md`. `make verify` will catch you if you miss one.
+If you bump the pinned commit, update it in **all** of: `setup.sh`, `verify.sh`, `.github/workflows/ci.yml`, `tests/test_setup.py`, and `README.md`. `make verify` will catch you if you miss one.
 
 ## Style
 
