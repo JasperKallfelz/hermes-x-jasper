@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "gates": [
+    {
+      "name": "pytest-suite",
+      "argv": ["/opt/homebrew/bin/python3.11", "-m", "pytest", "tests", "second-brain/tests", "-q"],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "public-audit",
+      "argv": ["python3", "scripts/audit_public.py"],
+      "timeout_seconds": 300
+    },
+    {
+      "name": "shell-syntax",
+      "argv": ["bash", "-n", "setup.sh", "verify.sh"],
+      "timeout_seconds": 60
+    },
+    {
+      "name": "diff-check",
+      "argv": ["git", "diff", "--check"],
+      "timeout_seconds": 60
+    }
+  ]
+}
