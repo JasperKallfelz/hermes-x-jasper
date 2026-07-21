@@ -7,7 +7,7 @@
 #   HERMES_VERIFY_UPSTREAM_REPO=/path/to/mirror ./verify.sh
 #
 # The patch check clones upstream at the pinned commit into a temp dir and runs
-# `git apply --check`. That is the one test that proves the starter still works
+# `git apply --check --whitespace=error-all`. That is the one test that proves the starter still works
 # against the real repo, so it is on by default and only skipped explicitly.
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -32,15 +32,17 @@ skip() { printf '%s  SKIP%s %s\n' "$YELLOW" "$NC" "$*"; }
 
 # --- 1. shell syntax -------------------------------------------------------
 step "Shell syntax"
-for script in setup.sh verify.sh; do
+for script in setup.sh verify.sh scripts/gitleaks_scan.sh; do
   if bash -n "$script" 2>/dev/null; then pass "bash -n $script"; else
     bash -n "$script"; fail "bash -n $script"
   fi
 done
-if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -S warning setup.sh verify.sh; then pass "shellcheck"; else fail "shellcheck"; fi
+if ! command -v shellcheck >/dev/null 2>&1; then
+  fail "shellcheck missing — install it first"
+elif shellcheck -S warning setup.sh verify.sh scripts/gitleaks_scan.sh; then
+  pass "shellcheck"
 else
-  skip "shellcheck not installed (bash -n already ran)"
+  fail "shellcheck"
 fi
 
 # --- 2. python compiles ----------------------------------------------------
@@ -55,11 +57,10 @@ fi
 
 # --- 3. tests --------------------------------------------------------------
 step "Tests"
-if python3 -c 'import yaml' 2>/dev/null; then
+if python3 -c 'import pytest, yaml' 2>/dev/null; then
   ROOT_TESTS=0
   CODER_TESTS=0
-  if python3 -m pytest tests second-brain/tests -q 2>/dev/null \
-      || python3 -m unittest discover -s tests -q; then
+  if python3 -m pytest tests second-brain/tests -q; then
     ROOT_TESTS=1
   fi
   CODER_PYTHON=python3
@@ -82,7 +83,7 @@ if python3 -c 'import yaml' 2>/dev/null; then
     fail "test suite"
   fi
 else
-  fail "PyYAML missing — install it first: pip install pyyaml (and pytest)"
+  fail "pytest or PyYAML missing — install them first: pip install pytest pyyaml"
 fi
 
 # --- 4. leak audit ---------------------------------------------------------
@@ -102,7 +103,7 @@ if command -v gitleaks >/dev/null 2>&1; then
     fail "gitleaks found secrets"
   fi
 else
-  skip "gitleaks not installed (install v8.30.1 to run the secret-scan gate)"
+  fail "gitleaks missing — install pinned v8.30.1"
 fi
 
 # --- 6. patch applies to a fresh pinned upstream ---------------------------
@@ -119,10 +120,10 @@ else
     fail "could not clone $UPSTREAM_REPO (network required; re-run with --offline to skip)"
   elif ! git -C "$TMP_DIR/hermes" checkout --quiet --detach "$PINNED_COMMIT" 2>/dev/null; then
     fail "pinned commit $PINNED_COMMIT not found upstream"
-  elif git -C "$TMP_DIR/hermes" apply --check "$PATCH_FILE"; then
-    pass "git apply --check"
+  elif git -C "$TMP_DIR/hermes" apply --check --whitespace=error-all "$PATCH_FILE"; then
+    pass "git apply --check --whitespace=error-all"
   else
-    git -C "$TMP_DIR/hermes" apply --check -v "$PATCH_FILE" 2>&1 | tail -20
+    git -C "$TMP_DIR/hermes" apply --check --whitespace=error-all -v "$PATCH_FILE" 2>&1 | tail -20
     fail "patch no longer applies to the pinned commit"
   fi
 fi

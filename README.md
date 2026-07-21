@@ -196,7 +196,7 @@ scripts/parakeet_stt_limited.py  local bilingual STT helper
 coder-stack/bin/* ──────────►  ~/.local/bin/hermes-coder{,-flow} (default)
 ```
 
-The patch is deliberately small (~730 added lines across 9 files — four tool/CLI/adapter modules plus five test files): the auto-CDP browser, TTS runtime overrides, and Telegram keyboard cleanup, each with tests. Hermes Agent itself is not vendored, so upstream stays a clean git checkout you can `git diff` against at any time. The Discord voice stack and the upstream detach-running-turn feature are intentionally **not** included in this patch. The independent public coding-wrapper snapshot is intentionally vendored under `coder-stack/` without its source repository's Git history or runtime data.
+The patch is deliberately small: the auto-CDP browser, TTS runtime overrides, and Telegram keyboard cleanup, each with tests. Hermes Agent itself is not vendored; applying the patch intentionally leaves tracked working-tree changes in the upstream checkout that you can inspect with `git diff`. The Discord voice stack and the upstream detach-running-turn feature are intentionally **not** included in this patch. The independent public coding-wrapper snapshot is intentionally vendored under `coder-stack/` without its source repository's Git history or runtime data.
 
 Pinned upstream commit: **`3ef6bbd201263d354fd83ec55b3c306ded2eb72a`** (Hermes Agent v0.19.0, release tag `v2026.7.20`).
 

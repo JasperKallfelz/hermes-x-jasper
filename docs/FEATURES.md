@@ -38,7 +38,7 @@ delegation:
   model: ""                     # e.g. "google/gemini-3-flash-preview"
   provider: ""                  # e.g. "openrouter"
   max_concurrent_children: 8    # unified cap: parallel AND background children
-  max_spawn_depth: 3            # how deep a child may itself delegate (range 1-3)
+  max_spawn_depth: 3            # how deep a child may itself delegate (minimum 1)
   subagent_auto_approve: false
 ```
 
@@ -59,7 +59,7 @@ browser:
 
 Stock Hermes drives a fresh headless browser, which anti-bot systems block on sight and which is logged into nothing. With `cdp_url` pointed at a local DevTools endpoint, it attaches to **your real Chrome** instead — your cookies, your sessions, your logins.
 
-`auto_launch_local_cdp` is the patch's contribution: when that endpoint is not up, Hermes starts a Chrome with remote debugging enabled on demand, using a dedicated profile directory. You log into the sites you care about once, in that window, and it persists.
+`auto_launch_local_cdp` is the patch's contribution: when that endpoint is not up, Hermes starts a Chrome with remote debugging enabled on demand, using a dedicated profile directory. You log into the sites you care about once, in that window, and it persists. An explicitly set `BROWSER_TOOL_AUTO_CDP` environment variable overrides the config for that process; use `1` to enable or `0` to disable.
 
 > This is the single most powerful and most dangerous setting in the file. The agent inherits every session you have. See [SECURITY.md](../SECURITY.md).
 
@@ -109,7 +109,7 @@ tts:
   providers:
     jarvis:
       type: command
-      command: "python3 ~/hermes-cli-starter/scripts/jarvis_style_tts.py {input_path} {output_path}"
+      command: "python3 ~/hermes-x-jasper/scripts/jarvis_style_tts.py {input_path} {output_path}"
       output_format: mp3
       timeout: 120
       voice_compatible: true
@@ -123,7 +123,7 @@ Tune it without editing the script:
 HERMES_TTS_VOICE=en-GB-RyanNeural HERMES_TTS_RATE=-4% HERMES_TTS_PITCH=-5Hz
 ```
 
-Use an absolute path in `command` if you cloned the starter somewhere other than `~/hermes-cli-starter`.
+Use an absolute path in `command` if you cloned the starter somewhere other than `~/hermes-x-jasper`.
 
 ## Speech to text
 

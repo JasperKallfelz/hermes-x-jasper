@@ -141,6 +141,99 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(list(self.coder_bin.glob(name + ".bak-*")), [])
         self.assertIn("already installed and current", second.stdout)
 
+    def test_existing_regular_config_targets_are_untouched(self):
+        self.hermes_home.mkdir()
+        env_target = self.hermes_home / ".env"
+        config_target = self.hermes_home / "config.yaml"
+        env_target.write_text("EXISTING=env\n", encoding="utf-8")
+        config_target.write_text("existing: config\n", encoding="utf-8")
+        env_target.chmod(0o640)
+        before = {
+            path: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+            for path in (env_target, config_target)
+        }
+
+        result = self.run_setup()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path, expected in before.items():
+            self.assertEqual(
+                (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)), expected
+            )
+
+    def test_config_target_conflicts_fail_before_any_setup_mutation(self):
+        cases = (
+            "dangling-env-symlink",
+            "env-symlink",
+            "dangling-config-symlink",
+            "config-directory",
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                case_root = self.base / case
+                case_root.mkdir()
+                hermes_home = case_root / "hermes-home"
+                coder_bin = case_root / "bin"
+                hermes_home.mkdir()
+                external = case_root / "external"
+                if case == "dangling-env-symlink":
+                    (hermes_home / ".env").symlink_to(external)
+                elif case == "env-symlink":
+                    external.write_text("external-owned\n", encoding="utf-8")
+                    external.chmod(0o644)
+                    (hermes_home / ".env").symlink_to(external)
+                elif case == "dangling-config-symlink":
+                    (hermes_home / "config.yaml").symlink_to(external)
+                else:
+                    (hermes_home / "config.yaml").mkdir()
+
+                before = self.tree_snapshot()
+                result = subprocess.run(
+                    [
+                        "bash", str(SETUP),
+                        "--install-dir", str(self.install_dir),
+                        "--hermes-home", str(hermes_home),
+                        "--coder-bin-dir", str(coder_bin),
+                        "--skip-voice",
+                    ],
+                    cwd=REPO, env=self.env, capture_output=True, text=True,
+                    check=False,
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("not a regular file", result.stderr)
+                self.assertEqual(self.tree_snapshot(), before)
+                self.assertFalse(coder_bin.exists())
+                self.assertFalse((hermes_home / "config.yaml").is_file())
+                if external.exists():
+                    self.assertEqual(external.read_text(), "external-owned\n")
+                    self.assertEqual(stat.S_IMODE(external.stat().st_mode), 0o644)
+
+    def test_custom_hermes_home_reaches_upstream_installer_and_start_command(self):
+        hermes = self.install_dir / "venv" / "bin" / "hermes"
+        hermes.unlink()
+        capture = self.base / "installer-hermes-home"
+        installer = self.install_dir / "setup-hermes.sh"
+        installer.write_text(
+            "#!/bin/sh\n"
+            "printf '%s' \"$HERMES_HOME\" > \"$INSTALLER_CAPTURE\"\n"
+            "mkdir -p \"$(dirname \"$0\")/venv/bin\"\n"
+            "printf '#!/bin/sh\\nexit 0\\n' > \"$(dirname \"$0\")/venv/bin/hermes\"\n"
+            "chmod 755 \"$(dirname \"$0\")/venv/bin/hermes\"\n",
+            encoding="utf-8",
+        )
+        installer.chmod(0o755)
+        self.env["INSTALLER_CAPTURE"] = str(capture)
+
+        result = self.run_setup()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(capture.read_text(encoding="utf-8"), str(self.hermes_home))
+        self.assertIn(
+            f"HERMES_HOME='{self.hermes_home}' {self.install_dir}/venv/bin/hermes",
+            result.stdout,
+        )
+
     def test_same_content_with_wrong_mode_restores_executable_bit(self):
         result = self.run_setup()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -244,7 +337,12 @@ class DarwinGitIdentityFixtureTest(unittest.TestCase):
             "-c", "core.fsmonitor=",
         )
         commands = (
+            prefix + ("rev-parse", "HEAD"),
             prefix + ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            prefix + ("diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"),
+            prefix + ("diff", "--binary", "--no-ext-diff", "--no-textconv", "--cached", "HEAD", "--"),
+            prefix + ("ls-files", "--others", "--exclude-standard", "-z"),
+            prefix + ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
             prefix + ("show", "refs/heads/definitely-missing"),
         )
         for argv in commands:
@@ -278,7 +376,7 @@ class DarwinGitIdentityFixtureTest(unittest.TestCase):
         )
         ordinary_seconds = fastest(ordinary)
         bounded_seconds = fastest(bounded)
-        self.assertGreaterEqual(bounded_seconds, 0.015)
+        self.assertGreaterEqual(bounded_seconds, 0.025)
         self.assertGreater(
             bounded_seconds - ordinary_seconds,
             0.005,

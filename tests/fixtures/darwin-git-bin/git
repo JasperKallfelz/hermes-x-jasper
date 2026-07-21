@@ -12,6 +12,7 @@ case "$*" in
   "-c core.hooksPath=/dev/null -c core.fsmonitor= rev-parse HEAD"|\
   "-c core.hooksPath=/dev/null -c core.fsmonitor= status --porcelain=v1 -z --untracked-files=all"|\
   "-c core.hooksPath=/dev/null -c core.fsmonitor= diff --binary --no-ext-diff --no-textconv HEAD --"|\
+  "-c core.hooksPath=/dev/null -c core.fsmonitor= diff --binary --no-ext-diff --no-textconv --cached HEAD --"|\
   "-c core.hooksPath=/dev/null -c core.fsmonitor= ls-files --others --exclude-standard -z"|\
   "-c core.hooksPath=/dev/null -c core.fsmonitor= ls-files --others --ignored --exclude-standard -z"|\
   "-c core.hooksPath=/dev/null -c core.fsmonitor= show "*) bounded=1 ;;
@@ -21,7 +22,7 @@ if [ "$bounded" -eq 0 ]; then
   exec /usr/bin/git "$@"
 fi
 
-/bin/sleep 0.02 &
+/bin/sleep 0.03 &
 identity_hold=$!
 /usr/bin/git "$@"
 git_status=$?

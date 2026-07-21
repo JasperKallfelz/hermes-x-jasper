@@ -21,10 +21,11 @@ global `code_execution.timeout` to accommodate it.
 ## What this starter ships (and what it does not)
 
 - **Pinned upstream.** Hermes Agent is cloned at commit
-  `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` (v0.19.0, tag `v2026.7.20`) and left
-  as a clean git checkout. This repo vendors none of it.
-- **Feature patch** (`patches/voice-and-desktop-features.patch`, ~730 lines / 9
-  files): auto-CDP browser, TTS runtime overrides, Telegram keyboard cleanup,
+  `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` (v0.19.0, tag `v2026.7.20`) and
+  patched in place, leaving intentional tracked working-tree changes. This repo
+  vendors none of it.
+- **Feature patch** (`patches/voice-and-desktop-features.patch`): auto-CDP
+  browser, TTS runtime overrides, Telegram keyboard cleanup,
   each with tests. It deliberately excludes the Discord voice stack and the
   upstream detach-running-turn feature.
 - **Config overlay** (`config.example.yaml`): only keys this starter turns on,

@@ -5,11 +5,12 @@
 #   scripts/gitleaks_scan.sh
 #
 # Runs two scans against the pinned .gitleaks.toml and requires BOTH to be clean:
-#   1. `gitleaks dir` over the working tree (what a fork would publish)
+#   1. `gitleaks dir` over a read-only snapshot of tracked + untracked,
+#      non-ignored files (what a fork would publish)
 #   2. `gitleaks git` over the entire commit history
 #
-# Generated Python caches are removed first so they are never included in the
-# scan (they are git-ignored build artifacts, not release content). The config
+# Git-ignored caches and local state are excluded by the same publication
+# boundary as `git status`; nothing in the working tree is removed. The config
 # uses only narrow, rule-bound, commit+path-scoped allowlists for known-immutable
 # historical false positives — never a global allowlist. See .gitleaks.toml.
 # ---------------------------------------------------------------------------
@@ -29,14 +30,22 @@ if [ "$have_version" != "$PINNED_VERSION" ]; then
   echo "note: gitleaks $have_version present; release gate is pinned to $PINNED_VERSION"
 fi
 
-# Never scan generated caches — .gitignore already excludes them from git.
-find . -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
-find . -type d -name '.pytest_cache' -prune -exec rm -rf {} + 2>/dev/null || true
+# Gitleaks has no dir-mode path exclusion flag. Build a temporary publication
+# snapshot from Git's tracked + untracked/non-ignored file list instead of
+# deleting ignored caches from the operator's checkout.
+SCAN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-gitleaks-tree.XXXXXX")"
+trap 'rm -rf "$SCAN_DIR"' EXIT
+while IFS= read -r -d '' relative; do
+  source_path="$REPO_DIR/$relative"
+  [ -f "$source_path" ] && [ ! -L "$source_path" ] || continue
+  mkdir -p "$SCAN_DIR/$(dirname "$relative")"
+  cp "$source_path" "$SCAN_DIR/$relative"
+done < <(git ls-files --cached --others --exclude-standard -z)
 
 status=0
 
 echo "==> gitleaks dir (current working tree)"
-if gitleaks dir . --config "$CONFIG" --redact --no-banner; then
+if gitleaks dir "$SCAN_DIR" --config "$CONFIG" --redact --no-banner; then
   echo "  clean"
 else
   echo "  FAIL: current-tree secrets found"

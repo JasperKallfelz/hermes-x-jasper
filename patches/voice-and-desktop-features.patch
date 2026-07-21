@@ -19,6 +19,18 @@ index 4fcc4cc63c5f32d33f39e38b343a962f2e56c95c..93f0260c73efd5e7dd3702c4d420f756
              f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
          )
  
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index 947fddabf41570f3f4f6456cdb55c6166da53066..dfa69e9ca9610c802c912268080e17626b48368b 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -1315,6 +1315,7 @@ DEFAULT_CONFIG = {
+         "engine": "auto",
+         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
+         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
++        "auto_launch_local_cdp": False,  # Opt in to launching Hermes-managed Chrome when a loopback cdp_url is down
+         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
+         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
+         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
 diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
 index d91f2a799828b728bcd36655f71c98f3bc248262..8179652a6f5a2c1783b6133deeb52f996c35244c 100644
 --- a/plugins/platforms/telegram/adapter.py
@@ -157,6 +169,223 @@ index ef3a703db4834a95034a0cb9273554da3f96ab8c..bffea7df8cfb5a5388e32c886b09a5ba
          assert "'" not in command
  
      def test_manual_command_returns_none_when_linux_browser_missing(self):
+diff --git a/tools/browser_tool.py b/tools/browser_tool.py
+index bcc1455d7831c4a04e726d0aa95e732164aee4e9..a2f367d5095de4d5864af0411f39fe1ff6107b63 100644
+--- a/tools/browser_tool.py
++++ b/tools/browser_tool.py
+@@ -485,6 +485,95 @@ def _get_cdp_override() -> str:
+     return ""
+ 
+ 
++def _auto_launch_local_cdp_enabled() -> bool:
++    """Whether to auto-launch a local debug Chrome when a loopback ``cdp_url``
++    is configured but not yet listening.
++
++    An explicitly present ``BROWSER_TOOL_AUTO_CDP`` is the live override,
++    including explicit false values. Otherwise use the shipped persistent
++    ``browser.auto_launch_local_cdp`` config key.
++    """
++    if "BROWSER_TOOL_AUTO_CDP" in os.environ:
++        return is_truthy_value(os.environ["BROWSER_TOOL_AUTO_CDP"])
++    try:
++        from hermes_cli.config import read_raw_config
++
++        cfg = read_raw_config()
++        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
++        return bool(
++            browser_cfg.get("auto_launch_local_cdp", False)
++            if isinstance(browser_cfg, dict)
++            else False
++        )
++    except Exception as e:
++        logger.debug("Could not read browser.auto_launch_local_cdp from config: %s", e)
++        return False
++
++
++def _ensure_local_cdp_ready(cdp_url: str) -> str:
++    """On-demand: if ``cdp_url`` points at a *local loopback* DevTools endpoint
++    that isn't up yet, launch the Hermes-managed debug Chrome (own persistent
++    profile under ~/.hermes/chrome-debug), wait for it, and return a freshly
++    resolved websocket endpoint.
++
++    No-op for remote / non-loopback endpoints (cloud CDP is never launched
++    locally) and when already reachable. Returns the input unchanged on any
++    failure so the caller can surface the original connection error.
++    """
++    if not _auto_launch_local_cdp_enabled():
++        return cdp_url
++    from urllib.parse import urlparse
++
++    parsed = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
++    host = (parsed.hostname or "").lower()
++    if host not in {"127.0.0.1", "localhost", "::1"}:
++        return cdp_url
++
++    try:
++        from hermes_cli.browser_connect import (
++            is_browser_debug_ready,
++            try_launch_chrome_debug,
++        )
++    except Exception as e:
++        logger.debug("browser_connect helpers unavailable: %s", e)
++        return cdp_url
++
++    if is_browser_debug_ready(cdp_url, timeout=1.0):
++        return cdp_url
++
++    try:
++        port = parsed.port or 9222
++    except ValueError:
++        port = 9222
++
++    logger.info(
++        "Auto-CDP enabled: auto-launching local debug Chrome on 127.0.0.1:%s",
++        port,
++    )
++    try:
++        launched = try_launch_chrome_debug(port)
++    except Exception as e:
++        logger.warning("Auto-launch of debug Chrome failed: %s", e)
++        launched = False
++
++    if not launched:
++        return cdp_url
++
++    # launch_chrome_debug only waits a short grace window; slower browsers can
++    # still be starting, so keep polling before re-resolving the endpoint.
++    deadline = time.monotonic() + 12.0
++    while time.monotonic() < deadline:
++        if is_browser_debug_ready(cdp_url, timeout=0.05):
++            logger.info("Debug Chrome ready on port %s", port)
++            break
++        time.sleep(0.05)
++    else:
++        logger.warning("Debug Chrome launched but port %s not responding yet", port)
++
++    # Re-resolve so callers get a concrete ws:// endpoint now that Chrome is up.
++    return _resolve_cdp_override(cdp_url)
++
++
+ def _get_dialog_policy_config() -> Tuple[str, float]:
+     """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s`` from config.
+ 
+@@ -2081,6 +2170,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+     # Create session outside the lock (network call in cloud mode)
+     cdp_override = _get_cdp_override()
+     if cdp_override and not force_local:
++        cdp_override = _ensure_local_cdp_ready(cdp_override)
+         session_info = _create_cdp_session(task_id, cdp_override)
+     elif force_local:
+         session_info = _create_local_session(task_id)
+diff --git a/tools/tts_tool.py b/tools/tts_tool.py
+index 545d72bb6907dfea58263f4bbf8ba20331da1c12..9e9129d5842085c586c34197e42a2ef8530c47d7 100644
+--- a/tools/tts_tool.py
++++ b/tools/tts_tool.py
+@@ -36,6 +36,7 @@ Usage:
+ 
+ import asyncio
+ import base64
++import copy
+ import datetime
+ import json
+ import logging
+@@ -362,6 +363,51 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
+     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+ 
+ 
++def _apply_runtime_tts_overrides(
++    tts_config: Dict[str, Any],
++    *,
++    provider: Optional[str] = None,
++    voice: Optional[str] = None,
++    model: Optional[str] = None,
++    speed: Optional[float] = None,
++) -> Dict[str, Any]:
++    """Clone TTS config and apply transport-local persona overrides.
++
++    Runtime overrides never mutate the user's loaded config and are deliberately
++    absent from the model-facing tool schema. Values are written both to the
++    generic plugin keys and the selected provider block because built-in and
++    plugin providers resolve their options from different levels.
++    """
++    resolved = copy.deepcopy(tts_config) if isinstance(tts_config, dict) else {}
++    selected = str(provider or _get_provider(resolved)).lower().strip()
++    if provider:
++        resolved["provider"] = selected
++
++    values = {"voice": voice, "model": model, "speed": speed}
++    for key, value in values.items():
++        if value is not None and value != "":
++            resolved[key] = value
++
++    provider_config = dict(resolved.get(selected) or {})
++    if voice:
++        provider_config["voice"] = voice
++        provider_config["voice_id"] = voice
++    if model:
++        provider_config["model"] = model
++        provider_config["model_id"] = model
++    if speed is not None:
++        provider_config["speed"] = speed
++    resolved[selected] = provider_config
++
++    named_providers = resolved.get("providers")
++    if isinstance(named_providers, dict) and selected in named_providers:
++        named_providers[selected] = {
++            **dict(named_providers.get(selected) or {}),
++            **provider_config,
++        }
++    return resolved
++
++
+ # ===========================================================================
+ # Custom command providers (type: command under tts.providers.<name>)
+ # ===========================================================================
+@@ -2284,6 +2330,11 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
+ def text_to_speech_tool(
+     text: str,
+     output_path: Optional[str] = None,
++    *,
++    provider_override: Optional[str] = None,
++    voice_override: Optional[str] = None,
++    model_override: Optional[str] = None,
++    speed_override: Optional[float] = None,
+ ) -> str:
+     """
+     Convert text to speech audio.
+@@ -2299,6 +2350,12 @@ def text_to_speech_tool(
+         text: The text to convert to speech.
+         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+ 
++    Keyword-only, internal-use overrides (never exposed to the model schema):
++        provider_override / voice_override / model_override / speed_override let
++        an internal caller (e.g. a per-channel speaker persona) pick a provider
++        and voice at call time without mutating the user's loaded config. When
++        all are unset the loaded config is used unchanged.
++
+     Returns:
+         str: JSON result with success, file_path, and optionally MEDIA tag.
+     """
+@@ -2306,6 +2363,19 @@ def text_to_speech_tool(
+         return tool_error("Text is required", success=False)
+ 
+     tts_config = _load_tts_config()
++    # Apply call-time persona overrides only when at least one is supplied, so
++    # the common (no-override) path uses the loaded config verbatim.
++    if any(
++        o is not None
++        for o in (provider_override, voice_override, model_override, speed_override)
++    ):
++        tts_config = _apply_runtime_tts_overrides(
++            tts_config,
++            provider=provider_override,
++            voice=voice_override,
++            model=model_override,
++            speed=speed_override,
++        )
+     provider = _get_provider(tts_config)
+ 
+     # User-declared command provider (type: command under tts.providers.<name>)
 diff --git a/tests/gateway/test_telegram_location_keyboard_cleanup.py b/tests/gateway/test_telegram_location_keyboard_cleanup.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..9334805d6b7a782e4d630b312fc9153f27634a87
@@ -414,14 +643,14 @@ index 0000000000000000000000000000000000000000..2fb668f30f6d3471afff90e56fcb6173
 +    assert "--remote-debugging-address=127.0.0.1" in cmd
 diff --git a/tests/tools/test_browser_auto_cdp.py b/tests/tools/test_browser_auto_cdp.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e24f52b1b9ff592941a9b1cb6487e0caabc27916
+index 0000000000000000000000000000000000000000..ae2daec2e5dda8af044b2880b061571aea1079f5
 --- /dev/null
 +++ b/tests/tools/test_browser_auto_cdp.py
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,136 @@
 +"""Opt-in auto-launch of a local debug Chrome for loopback ``cdp_url`` endpoints.
 +
-+When ``BROWSER_TOOL_AUTO_CDP`` is truthy and the configured CDP override points
-+at a loopback DevTools endpoint that is not yet listening, the browser tool
++When config (or its explicit environment override) enables auto-CDP and the
++configured CDP override points at a loopback endpoint that is not listening, the browser tool
 +launches the Hermes-managed debug Chrome on demand instead of failing the
 +connection. Remote/cloud endpoints are never auto-launched, and the feature is
 +fully inert unless explicitly enabled.
@@ -434,17 +663,40 @@ index 0000000000000000000000000000000000000000..e24f52b1b9ff592941a9b1cb6487e0ca
 +RESOLVED_WS = "ws://127.0.0.1:9222/devtools/browser/abc123"
 +
 +
-+def test_disabled_by_default_is_a_noop(monkeypatch):
-+    """Without the env opt-in nothing is probed or launched."""
-+    from tools.browser_tool import _ensure_local_cdp_ready
++def test_config_true_enables_auto_cdp(monkeypatch):
++    from tools.browser_tool import _auto_launch_local_cdp_enabled
 +
 +    monkeypatch.delenv("BROWSER_TOOL_AUTO_CDP", raising=False)
-+    with patch("hermes_cli.browser_connect.try_launch_chrome_debug") as mock_launch, \
-+            patch("hermes_cli.browser_connect.is_browser_debug_ready") as mock_ready:
-+        assert _ensure_local_cdp_ready(LOCAL_URL) == LOCAL_URL
++    with patch(
++        "hermes_cli.config.read_raw_config",
++        return_value={"browser": {"auto_launch_local_cdp": True}},
++    ):
++        assert _auto_launch_local_cdp_enabled() is True
 +
-+    mock_launch.assert_not_called()
-+    mock_ready.assert_not_called()
++
++def test_config_false_disables_auto_cdp(monkeypatch):
++    from tools.browser_tool import _auto_launch_local_cdp_enabled
++
++    monkeypatch.delenv("BROWSER_TOOL_AUTO_CDP", raising=False)
++    with patch(
++        "hermes_cli.config.read_raw_config",
++        return_value={"browser": {"auto_launch_local_cdp": False}},
++    ):
++        assert _auto_launch_local_cdp_enabled() is False
++
++
++def test_explicit_env_override_has_deterministic_precedence(monkeypatch):
++    from tools.browser_tool import _auto_launch_local_cdp_enabled
++
++    with patch(
++        "hermes_cli.config.read_raw_config",
++        return_value={"browser": {"auto_launch_local_cdp": True}},
++    ) as mock_config:
++        monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "0")
++        assert _auto_launch_local_cdp_enabled() is False
++        monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
++        assert _auto_launch_local_cdp_enabled() is True
++    mock_config.assert_not_called()
 +
 +
 +def test_enabled_never_launches_for_non_loopback_endpoint(monkeypatch):
@@ -697,203 +949,3 @@ index 0000000000000000000000000000000000000000..fe55ae05186d31089a9c8ea5c2c4f28a
 +    ):
 +        assert forbidden not in props, f"{forbidden} leaked into the model schema"
 +    assert "text" in TTS_SCHEMA["parameters"]["required"]
-diff --git a/tools/browser_tool.py b/tools/browser_tool.py
-index bcc1455d7831c4a04e726d0aa95e732164aee4e9..2031da26cbeffbe08b7849997a02774fa70cd064 100644
---- a/tools/browser_tool.py
-+++ b/tools/browser_tool.py
-@@ -485,6 +485,78 @@ def _get_cdp_override() -> str:
-     return ""
- 
- 
-+def _auto_launch_local_cdp_enabled() -> bool:
-+    """Whether to auto-launch a local debug Chrome when a loopback ``cdp_url``
-+    is configured but not yet listening. Opt-in via ``BROWSER_TOOL_AUTO_CDP=1``
-+    because it starts a local browser process with a debugging endpoint.
-+    """
-+    return is_truthy_value(os.getenv("BROWSER_TOOL_AUTO_CDP", ""))
-+
-+
-+def _ensure_local_cdp_ready(cdp_url: str) -> str:
-+    """On-demand: if ``cdp_url`` points at a *local loopback* DevTools endpoint
-+    that isn't up yet, launch the Hermes-managed debug Chrome (own persistent
-+    profile under ~/.hermes/chrome-debug), wait for it, and return a freshly
-+    resolved websocket endpoint.
-+
-+    No-op for remote / non-loopback endpoints (cloud CDP is never launched
-+    locally) and when already reachable. Returns the input unchanged on any
-+    failure so the caller can surface the original connection error.
-+    """
-+    if not _auto_launch_local_cdp_enabled():
-+        return cdp_url
-+    from urllib.parse import urlparse
-+
-+    parsed = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
-+    host = (parsed.hostname or "").lower()
-+    if host not in {"127.0.0.1", "localhost", "::1"}:
-+        return cdp_url
-+
-+    try:
-+        from hermes_cli.browser_connect import (
-+            is_browser_debug_ready,
-+            try_launch_chrome_debug,
-+        )
-+    except Exception as e:
-+        logger.debug("browser_connect helpers unavailable: %s", e)
-+        return cdp_url
-+
-+    if is_browser_debug_ready(cdp_url, timeout=1.0):
-+        return cdp_url
-+
-+    try:
-+        port = parsed.port or 9222
-+    except ValueError:
-+        port = 9222
-+
-+    logger.info(
-+        "BROWSER_TOOL_AUTO_CDP enabled: auto-launching local debug Chrome on 127.0.0.1:%s",
-+        port,
-+    )
-+    try:
-+        launched = try_launch_chrome_debug(port)
-+    except Exception as e:
-+        logger.warning("Auto-launch of debug Chrome failed: %s", e)
-+        launched = False
-+
-+    if not launched:
-+        return cdp_url
-+
-+    # launch_chrome_debug only waits a short grace window; slower browsers can
-+    # still be starting, so keep polling before re-resolving the endpoint.
-+    deadline = time.monotonic() + 12.0
-+    while time.monotonic() < deadline:
-+        if is_browser_debug_ready(cdp_url, timeout=0.05):
-+            logger.info("Debug Chrome ready on port %s", port)
-+            break
-+        time.sleep(0.05)
-+    else:
-+        logger.warning("Debug Chrome launched but port %s not responding yet", port)
-+
-+    # Re-resolve so callers get a concrete ws:// endpoint now that Chrome is up.
-+    return _resolve_cdp_override(cdp_url)
-+
-+
- def _get_dialog_policy_config() -> Tuple[str, float]:
-     """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s`` from config.
- 
-@@ -2081,6 +2153,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
-     # Create session outside the lock (network call in cloud mode)
-     cdp_override = _get_cdp_override()
-     if cdp_override and not force_local:
-+        cdp_override = _ensure_local_cdp_ready(cdp_override)
-         session_info = _create_cdp_session(task_id, cdp_override)
-     elif force_local:
-         session_info = _create_local_session(task_id)
-diff --git a/tools/tts_tool.py b/tools/tts_tool.py
-index 545d72bb6907dfea58263f4bbf8ba20331da1c12..9e9129d5842085c586c34197e42a2ef8530c47d7 100644
---- a/tools/tts_tool.py
-+++ b/tools/tts_tool.py
-@@ -36,6 +36,7 @@ Usage:
- 
- import asyncio
- import base64
-+import copy
- import datetime
- import json
- import logging
-@@ -362,6 +363,51 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
-     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
- 
- 
-+def _apply_runtime_tts_overrides(
-+    tts_config: Dict[str, Any],
-+    *,
-+    provider: Optional[str] = None,
-+    voice: Optional[str] = None,
-+    model: Optional[str] = None,
-+    speed: Optional[float] = None,
-+) -> Dict[str, Any]:
-+    """Clone TTS config and apply transport-local persona overrides.
-+
-+    Runtime overrides never mutate the user's loaded config and are deliberately
-+    absent from the model-facing tool schema. Values are written both to the
-+    generic plugin keys and the selected provider block because built-in and
-+    plugin providers resolve their options from different levels.
-+    """
-+    resolved = copy.deepcopy(tts_config) if isinstance(tts_config, dict) else {}
-+    selected = str(provider or _get_provider(resolved)).lower().strip()
-+    if provider:
-+        resolved["provider"] = selected
-+
-+    values = {"voice": voice, "model": model, "speed": speed}
-+    for key, value in values.items():
-+        if value is not None and value != "":
-+            resolved[key] = value
-+
-+    provider_config = dict(resolved.get(selected) or {})
-+    if voice:
-+        provider_config["voice"] = voice
-+        provider_config["voice_id"] = voice
-+    if model:
-+        provider_config["model"] = model
-+        provider_config["model_id"] = model
-+    if speed is not None:
-+        provider_config["speed"] = speed
-+    resolved[selected] = provider_config
-+
-+    named_providers = resolved.get("providers")
-+    if isinstance(named_providers, dict) and selected in named_providers:
-+        named_providers[selected] = {
-+            **dict(named_providers.get(selected) or {}),
-+            **provider_config,
-+        }
-+    return resolved
-+
-+
- # ===========================================================================
- # Custom command providers (type: command under tts.providers.<name>)
- # ===========================================================================
-@@ -2284,6 +2330,11 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
- def text_to_speech_tool(
-     text: str,
-     output_path: Optional[str] = None,
-+    *,
-+    provider_override: Optional[str] = None,
-+    voice_override: Optional[str] = None,
-+    model_override: Optional[str] = None,
-+    speed_override: Optional[float] = None,
- ) -> str:
-     """
-     Convert text to speech audio.
-@@ -2299,6 +2350,12 @@ def text_to_speech_tool(
-         text: The text to convert to speech.
-         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
- 
-+    Keyword-only, internal-use overrides (never exposed to the model schema):
-+        provider_override / voice_override / model_override / speed_override let
-+        an internal caller (e.g. a per-channel speaker persona) pick a provider
-+        and voice at call time without mutating the user's loaded config. When
-+        all are unset the loaded config is used unchanged.
-+
-     Returns:
-         str: JSON result with success, file_path, and optionally MEDIA tag.
-     """
-@@ -2306,6 +2363,19 @@ def text_to_speech_tool(
-         return tool_error("Text is required", success=False)
- 
-     tts_config = _load_tts_config()
-+    # Apply call-time persona overrides only when at least one is supplied, so
-+    # the common (no-override) path uses the loaded config verbatim.
-+    if any(
-+        o is not None
-+        for o in (provider_override, voice_override, model_override, speed_override)
-+    ):
-+        tts_config = _apply_runtime_tts_overrides(
-+            tts_config,
-+            provider=provider_override,
-+            voice=voice_override,
-+            model=model_override,
-+            speed=speed_override,
-+        )
-     provider = _get_provider(tts_config)
- 
-     # User-declared command provider (type: command under tts.providers.<name>)

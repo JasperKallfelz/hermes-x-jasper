@@ -19,8 +19,8 @@ The checkout is not at the pinned commit, or something already modified it. Find
 
 ```bash
 git -C ~/hermes-agent rev-parse HEAD          # should be 3ef6bbd201...
-git -C ~/hermes-agent status --short          # should be empty
-git -C ~/hermes-agent apply --check -v ~/hermes-cli-starter/patches/voice-and-desktop-features.patch
+git -C ~/hermes-agent status --short          # should show only the intentional patch changes
+git -C ~/hermes-agent apply --reverse --check -v ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
 ```
 
 If the patch is *already applied*, `setup.sh` detects that and skips it — this error means something else. To get back to a known-good state:
@@ -118,7 +118,7 @@ If the allowlist is *empty*, fix that immediately — that is not "the bot is br
 
 ### The JARVIS voice does not run
 
-Check the command path in `config.yaml` actually exists — if you cloned the starter somewhere other than `~/hermes-cli-starter`, `tts.providers.jarvis.command` still points at the old path. Use an absolute path. Test it standalone:
+Check the command path in `config.yaml` actually exists — if you cloned the starter somewhere other than `~/hermes-x-jasper`, `tts.providers.jarvis.command` still points at the example path. Use an absolute path. Test it standalone:
 
 ```bash
 echo "Systems online." > /tmp/in.txt
