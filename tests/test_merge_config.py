@@ -138,14 +138,43 @@ class TestShippedOverlay(unittest.TestCase):
         overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
         data = merge_config.load_yaml(overlay)
         for section in ("memory", "delegation", "browser", "code_execution",
-                        "streaming", "tts", "stt", "second_brain"):
+                        "streaming", "tts", "stt"):
             self.assertIn(section, data, f"{section} missing from config.example.yaml")
+
+    def test_overlay_has_no_non_upstream_second_brain_block(self):
+        # `second_brain:` is not an upstream Hermes config section; v0.19 does not
+        # retain unknown top-level keys. It must not leak into the Hermes overlay.
+        overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
+        data = merge_config.load_yaml(overlay)
+        self.assertNotIn("second_brain", data)
 
     def test_overlay_carries_no_secrets(self):
         overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
         data = merge_config.load_yaml(overlay)
         self.assertEqual(data["memory"]["provider"], "")
         self.assertEqual(data["delegation"]["api_key"] if "api_key" in data["delegation"] else "", "")
+
+    def test_overlay_uses_v019_orchestration_defaults(self):
+        overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
+        data = merge_config.load_yaml(overlay)
+        # v0.19: max_concurrent_children is the single unified cap; the deprecated
+        # max_async_children is gone (dropped by `hermes config migrate`).
+        self.assertEqual(
+            data["delegation"],
+            {
+                "orchestrator_enabled": True,
+                "model": "",
+                "provider": "",
+                "max_concurrent_children": 8,
+                "max_spawn_depth": 3,
+                "subagent_auto_approve": False,
+            },
+        )
+        self.assertNotIn("max_async_children", data["delegation"])
+        self.assertEqual(data["code_execution"]["timeout"], 300)
+        self.assertEqual(data["code_execution"]["max_tool_calls"], 1000)
+        # v0.19 code_execution.mode accepts only "project" or "strict".
+        self.assertIn(data["code_execution"]["mode"], ("project", "strict"))
 
 
 if __name__ == "__main__":

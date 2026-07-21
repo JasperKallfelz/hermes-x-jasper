@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.profraw
+.DS_Store
+.coverage
+.pytest_cache/

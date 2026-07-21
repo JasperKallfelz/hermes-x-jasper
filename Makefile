@@ -1,4 +1,4 @@
-.PHONY: help setup dry-run test audit verify merge clean
+.PHONY: help setup dry-run test audit gitleaks verify merge clean
 
 HERMES_HOME ?= $(HOME)/.hermes
 PYTHON      ?= python3
@@ -14,9 +14,13 @@ dry-run: ## Show what setup.sh would do, without changing anything
 
 test: ## Run the test suite
 	$(PYTHON) -m pytest tests second-brain/tests -q
+	cd coder-stack && PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache $(PYTHON) -m unittest discover -s tests -q
 
 audit: ## Scan this repo for secrets, PII and local paths
 	$(PYTHON) scripts/audit_public.py .
+
+gitleaks: ## Run the deterministic gitleaks gate (current tree + full history)
+	./scripts/gitleaks_scan.sh
 
 verify: ## Everything: shell syntax, python, tests, audit, patch check
 	./verify.sh

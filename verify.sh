@@ -4,6 +4,7 @@
 #
 #   ./verify.sh              # everything (the patch check needs network)
 #   ./verify.sh --offline    # skip the upstream clone + patch check
+#   HERMES_VERIFY_UPSTREAM_REPO=/path/to/mirror ./verify.sh
 #
 # The patch check clones upstream at the pinned commit into a temp dir and runs
 # `git apply --check`. That is the one test that proves the starter still works
@@ -14,8 +15,8 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR" || exit 1
 
-UPSTREAM_REPO="https://github.com/NousResearch/hermes-agent"
-PINNED_COMMIT="b56aafc2ef6befd96ecf00bf4788031cf4be169b"
+UPSTREAM_REPO="${HERMES_VERIFY_UPSTREAM_REPO:-https://github.com/NousResearch/hermes-agent}"
+PINNED_COMMIT="3ef6bbd201263d354fd83ec55b3c306ded2eb72a"
 PATCH_FILE="$REPO_DIR/patches/voice-and-desktop-features.patch"
 
 OFFLINE=0
@@ -44,8 +45,10 @@ fi
 
 # --- 2. python compiles ----------------------------------------------------
 step "Python syntax"
-if python3 -m compileall -q scripts tests second-brain/src second-brain/tests >/dev/null; then
-  pass "compileall scripts tests second-brain"
+if PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache \
+    python3 -m compileall -q scripts tests second-brain/src second-brain/tests \
+      coder-stack/bin coder-stack/tests >/dev/null; then
+  pass "compileall scripts tests second-brain coder-stack"
 else
   fail "compileall found a syntax error"
 fi
@@ -53,8 +56,28 @@ fi
 # --- 3. tests --------------------------------------------------------------
 step "Tests"
 if python3 -c 'import yaml' 2>/dev/null; then
-  if python3 -m pytest tests second-brain/tests -q 2>/dev/null || python3 -m unittest discover -s tests -q; then
-    pass "test suite"
+  ROOT_TESTS=0
+  CODER_TESTS=0
+  if python3 -m pytest tests second-brain/tests -q 2>/dev/null \
+      || python3 -m unittest discover -s tests -q; then
+    ROOT_TESTS=1
+  fi
+  CODER_PYTHON=python3
+  CODER_TEST_PATH=$PATH
+  if [ "$(uname -s)" = "Darwin" ] && [ -x /usr/bin/python3 ]; then
+    # The authoritative coder-stack CI target on macOS is Apple Python 3.9.
+    # The fixture narrowly holds only bounded-output Git group leaders long
+    # enough for Darwin process-identity capture; ordinary Git is undelayed.
+    CODER_PYTHON=/usr/bin/python3
+    CODER_TEST_PATH="$REPO_DIR/tests/fixtures/darwin-git-bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  fi
+  if (cd coder-stack && PATH="$CODER_TEST_PATH" \
+      PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache \
+      "$CODER_PYTHON" -m unittest discover -s tests -q); then
+    CODER_TESTS=1
+  fi
+  if [ "$ROOT_TESTS" -eq 1 ] && [ "$CODER_TESTS" -eq 1 ]; then
+    pass "root, Second Brain, and vendored coder-stack test suites"
   else
     fail "test suite"
   fi
@@ -70,7 +93,19 @@ else
   fail "audit_public found something — do not publish"
 fi
 
-# --- 5. patch applies to a fresh pinned upstream ---------------------------
+# --- 5. gitleaks secret-scan gate (current tree + full history) ------------
+step "Gitleaks secret-scan gate"
+if command -v gitleaks >/dev/null 2>&1; then
+  if bash "$REPO_DIR/scripts/gitleaks_scan.sh"; then
+    pass "gitleaks: current tree and history clean"
+  else
+    fail "gitleaks found secrets"
+  fi
+else
+  skip "gitleaks not installed (install v8.30.1 to run the secret-scan gate)"
+fi
+
+# --- 6. patch applies to a fresh pinned upstream ---------------------------
 step "Patch applies to upstream @ $PINNED_COMMIT"
 if [ "$OFFLINE" -eq 1 ]; then
   skip "--offline"

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "gates": [
+    {
+      "name": "unittest-suite",
+      "argv": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-q"
+      ],
+      "timeout_seconds": 600
+    },
+    {
+      "name": "py-compile",
+      "argv": [
+        "env",
+        "PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache",
+        "python3",
+        "-m",
+        "py_compile",
+        "bin/hermes-coder",
+        "bin/hermes-coder-flow",
+        "tests/test_hermes_coder.py",
+        "tests/test_hermes_coder_flow.py",
+        "tests/test_security_hardening.py"
+      ],
+      "timeout_seconds": 120
+    },
+    {
+      "name": "diff-check",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "timeout_seconds": 60
+    }
+  ]
+}

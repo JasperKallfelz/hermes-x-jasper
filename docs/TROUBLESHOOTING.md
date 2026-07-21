@@ -18,7 +18,7 @@ Start here:
 The checkout is not at the pinned commit, or something already modified it. Find out which:
 
 ```bash
-git -C ~/hermes-agent rev-parse HEAD          # should be b56aafc2ef...
+git -C ~/hermes-agent rev-parse HEAD          # should be 3ef6bbd201...
 git -C ~/hermes-agent status --short          # should be empty
 git -C ~/hermes-agent apply --check -v ~/hermes-cli-starter/patches/voice-and-desktop-features.patch
 ```
@@ -28,7 +28,7 @@ If the patch is *already applied*, `setup.sh` detects that and skips it — this
 ```bash
 cd ~/hermes-agent
 git checkout -- .                       # drop all local changes, including the patch
-git checkout --detach b56aafc2ef6befd96ecf00bf4788031cf4be169b
+git checkout --detach 3ef6bbd201263d354fd83ec55b3c306ded2eb72a
 ```
 
 Then re-run `./setup.sh`.
