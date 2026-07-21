@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd template for the upstream Hermes WhatsApp (Baileys) bridge.
+
+  setup_whatsapp.sh renders this file, substituting the placeholder tokens
+  below, and installs the result as a per-user LaunchAgent. The bridge itself
+  lives in the pinned upstream checkout (scripts/whatsapp-bridge) and is NOT
+  vendored here. The rendered agent binds to loopback only (port 3000) and runs
+  in self-chat mode so the agent is triggered from your own WhatsApp chat.
+
+  Placeholders:
+    __HOME__        -> $HOME
+    __NODE__        -> absolute path to `node`
+    __BRIDGE_DIR__  -> upstream scripts/whatsapp-bridge directory
+    (the entry file under __BRIDGE_DIR__ is resolved at render time)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.hermes-messaging.whatsapp</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__BRIDGE_DIR__/index.js</string>
+    <string>--mode</string>
+    <string>self-chat</string>
+    <string>--port</string>
+    <string>3000</string>
+    <string>--session-dir</string>
+    <string>__HOME__/.hermes/platforms/whatsapp/session</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__BRIDGE_DIR__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PATH</key>
+    <string>__HOME__/.hermes/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>Umask</key>
+  <integer>63</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/hermes-messaging.whatsapp.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/hermes-messaging.whatsapp.err.log</string>
+</dict>
+</plist>

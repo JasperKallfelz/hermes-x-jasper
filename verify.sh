@@ -32,13 +32,13 @@ skip() { printf '%s  SKIP%s %s\n' "$YELLOW" "$NC" "$*"; }
 
 # --- 1. shell syntax -------------------------------------------------------
 step "Shell syntax"
-for script in setup.sh verify.sh; do
+for script in setup.sh verify.sh messaging/*.sh; do
   if bash -n "$script" 2>/dev/null; then pass "bash -n $script"; else
     bash -n "$script"; fail "bash -n $script"
   fi
 done
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -S warning setup.sh verify.sh; then pass "shellcheck"; else fail "shellcheck"; fi
+  if shellcheck -S warning setup.sh verify.sh messaging/*.sh; then pass "shellcheck"; else fail "shellcheck"; fi
 else
   skip "shellcheck not installed (bash -n already ran)"
 fi

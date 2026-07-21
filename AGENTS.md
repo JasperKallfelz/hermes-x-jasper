@@ -41,4 +41,11 @@ global `code_execution.timeout` to accommodate it.
   provider billing. `setup.sh` only reports whether the CLIs are present.
 - **Opt-in Second Brain** (`second-brain/`): a local CLI configured through its
   own manifest, not Hermes config; nothing runs unless you invoke it.
+- **Opt-in Messaging bridges** (`messaging/`): macOS-first `launchd` installers
+  for a loopback-only WhatsApp Baileys bridge (self-chat trigger, port 3000) and
+  a `signal-cli` JSON-RPC daemon (Note-to-Self trigger, `127.0.0.1:8080`). The
+  scripts point at the WhatsApp bridge in the pinned upstream checkout
+  (`scripts/whatsapp-bridge`) — no upstream bridge code is vendored — render
+  `launchd` plist templates, and print pairing/health/env guidance. Nothing runs
+  unless you invoke it, and no real numbers, sessions, or machine paths ship.
 - This public starter does not reproduce the maintainer's private live setup.

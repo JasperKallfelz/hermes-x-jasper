@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd template for the signal-cli JSON-RPC daemon.
+
+  setup_signal.sh renders this file, substituting the placeholder tokens
+  below, and installs the result as a per-user LaunchAgent. The daemon binds to
+  loopback only (127.0.0.1:8080) and exposes signal-cli over JSON-RPC/SSE for
+  the Hermes gateway.
+
+  Placeholders:
+    __HOME__                 -> $HOME
+    __SIGNAL_CLI__           -> absolute path to `signal-cli`
+    __SIGNAL_E164_ACCOUNT__  -> the linked account in E.164 form (e.g. +<country><number>)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.hermes-messaging.signal</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__SIGNAL_CLI__</string>
+    <string>--account</string>
+    <string>__SIGNAL_E164_ACCOUNT__</string>
+    <string>daemon</string>
+    <string>--http</string>
+    <string>127.0.0.1:8080</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__HOME__/.hermes/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>Umask</key>
+  <integer>63</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/hermes-messaging.signal.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/hermes-messaging.signal.err.log</string>
+</dict>
+</plist>
