@@ -30,9 +30,10 @@ A one-command setup for a **personalised [Hermes Agent](https://github.com/NousR
 | **JARVIS-style voice** | Edge TTS + an ffmpeg filter chain for a filtered assistant voice | script |
 | **Claude/Codex coding flow** | Bounded subscription-CLI routing, deterministic gates, isolated worktrees, and opposite-vendor review | vendored module |
 | **Local Second Brain starter** | Optional approved-root scanner, SQLite state, dry-run sync, and explicit OpenViking CLI export of approved excerpts | module |
+| **Messaging bridges (WhatsApp + Signal)** | Opt-in macOS launchd setup for a loopback WhatsApp Baileys bridge (self-chat) and a `signal-cli` JSON-RPC daemon | module |
 
 "patch" = added by `patches/voice-and-desktop-features.patch`. "script" = `scripts/`.
-"module" = the independent `second-brain/` Python package in this repo.
+"module" = an independent opt-in module in this repo (`second-brain/`, `messaging/`).
 
 > [!NOTE]
 > The Discord voice stack (voice mixer, barge-in, join greeting, streaming STT, voice jobs) has been split out of the main patch and is **not currently shipped** here. It is being rearchitected (isolated Node media gateway) and will return once it is stable.
@@ -262,6 +263,30 @@ Safe boundaries:
 - `sync` is preview-only by default; only `sync --apply` invokes `ov add-resource` / `ov write`.
 - The module performs basic redaction only; it is not a guarantee against secrets or PII in ordinary note content. Approve roots and inspect the scan before `--apply`.
 - Production manifests, scheduler labels, account IDs, personal paths, and private integration glue are intentionally omitted. Add them only in private local config.
+
+---
+
+## Optional Messaging bridges (WhatsApp + Signal)
+
+This repo includes an opt-in, macOS-first [`messaging/`](messaging/README.md)
+module that wires personal WhatsApp and Signal into Hermes as **loopback-only**
+bridges. Nothing runs until you invoke it, and no upstream bridge code is
+vendored: the WhatsApp bridge is the one in the pinned upstream checkout
+(`scripts/whatsapp-bridge`), and Signal is driven by the community `signal-cli`.
+
+```bash
+cd messaging
+./setup_whatsapp.sh     # loopback Baileys bridge on :3000, self-chat trigger
+./setup_signal.sh       # signal-cli JSON-RPC daemon on 127.0.0.1:8080
+```
+
+Both installers are idempotent, render a per-user `launchd` agent from a
+template, and print clear next-step guidance (pairing QR, health checks, the
+`SIGNAL_ACCOUNT`/`SIGNAL_HTTP_URL` lines for `~/.hermes/.env`). This public
+starter does not reproduce the maintainer's private live setup: real numbers,
+session data, and machine paths are supplied only when you run the installers.
+See [messaging/README.md](messaging/README.md) for the HTTP API, capabilities,
+honest limitations (no real voice/video calls), and security notes.
 
 ---
 
