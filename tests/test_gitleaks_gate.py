@@ -45,12 +45,48 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
 @unittest.skipUnless(GITLEAKS, "gitleaks not installed")
 class GitleaksGateTest(unittest.TestCase):
     def test_release_gate_script_reports_current_tree_and_history_clean(self):
-        proc = subprocess.run(
-            ["bash", str(REPO / "scripts" / "gitleaks_scan.sh")],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("clean", proc.stdout)
+        sentinel = REPO / "tests" / "__pycache__" / "gitleaks-cache-sentinel.bin"
+        sentinel.parent.mkdir(exist_ok=True)
+        sentinel.write_bytes(b"cache sentinel must survive\n")
+        try:
+            proc = subprocess.run(
+                ["bash", str(REPO / "scripts" / "gitleaks_scan.sh")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("clean", proc.stdout)
+            self.assertEqual(sentinel.read_bytes(), b"cache sentinel must survive\n")
+        finally:
+            sentinel.unlink(missing_ok=True)
+
+    def test_script_detects_uncommitted_same_path_canary_without_mutating_cache(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            shutil.copy2(REPO / "scripts" / "gitleaks_scan.sh", scripts)
+            shutil.copy2(REPO / ".gitleaks.toml", root)
+            _git(root, "init", "-q")
+            fixture = root / "tests" / "test_audit_public.py"
+            fixture.parent.mkdir()
+            fixture.write_text("# clean tracked fixture\n", encoding="utf-8")
+            (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+            _git(root, "add", "-A")
+            _git(root, "commit", "-q", "-m", "clean")
+
+            cache_sentinel = root / "tests" / "__pycache__" / "sentinel"
+            cache_sentinel.parent.mkdir()
+            cache_sentinel.write_text("preserve me\n", encoding="utf-8")
+            canary = _high_entropy_token("working-tree")
+            fixture.write_text('api_key = "' + canary + '"\n', encoding="utf-8")
+
+            proc = subprocess.run(
+                ["bash", str(scripts / "gitleaks_scan.sh")],
+                cwd=root, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("current-tree secrets found", proc.stdout)
+            self.assertEqual(cache_sentinel.read_text(), "preserve me\n")
 
     def test_rule_bound_allowlist_still_reports_a_new_same_path_canary(self):
         with TemporaryDirectory() as td:

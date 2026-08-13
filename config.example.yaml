@@ -47,7 +47,7 @@ delegation:
   # old, now-deprecated delegation.max_async_children (dropped by `hermes config
   # migrate`); do not add a separate async limit here.
   max_concurrent_children: 8
-  max_spawn_depth: 3             # how many levels deep a child may itself delegate (range 1-3)
+  max_spawn_depth: 3             # how many levels deep a child may itself delegate (minimum 1)
   subagent_auto_approve: false   # keep human approval in the loop
 
 # Browser. Pointing cdp_url at a loopback DevTools endpoint makes Hermes drive

@@ -29,7 +29,8 @@ jobs:
         run: |
           bash -n setup.sh
           bash -n verify.sh
-          shellcheck -S warning setup.sh verify.sh
+          bash -n scripts/gitleaks_scan.sh
+          shellcheck -S warning setup.sh verify.sh scripts/gitleaks_scan.sh
 
       - name: Python syntax
         env:
@@ -66,4 +67,4 @@ jobs:
           PINNED=3ef6bbd201263d354fd83ec55b3c306ded2eb72a
           git clone --quiet https://github.com/NousResearch/hermes-agent /tmp/hermes
           git -C /tmp/hermes checkout --quiet --detach "$PINNED"
-          git -C /tmp/hermes apply --check -v "$GITHUB_WORKSPACE/patches/voice-and-desktop-features.patch"
+          git -C /tmp/hermes apply --check --whitespace=error-all -v "$GITHUB_WORKSPACE/patches/voice-and-desktop-features.patch"

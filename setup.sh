@@ -74,6 +74,9 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 HERMES_HOME="${HERMES_HOME/#\~/$HOME}"
 CODER_BIN_DIR="${CODER_BIN_DIR/#\~/$HOME}"
 HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+ENV_TARGET="$HERMES_HOME/.env"
+CONFIG_TARGET="$HERMES_HOME/config.yaml"
+OVERLAY="$STARTER_DIR/config.example.yaml"
 
 echo
 info "Hermes CLI Starter"
@@ -109,6 +112,15 @@ command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg" \
   || warn "ffmpeg not found — voice replies need it (brew install ffmpeg / apt install ffmpeg)"
 
 [ -f "$PATCH_FILE" ] || die "patch not found: $PATCH_FILE"
+
+# Config targets are validated before wrapper installation, cloning, patching,
+# or any other mutation.  -e is false for dangling symlinks, so test -L too.
+for target in "$ENV_TARGET" "$CONFIG_TARGET"; do
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -f "$target" ] && [ ! -L "$target" ] \
+      || die "$target exists but is not a regular file; move it aside manually"
+  fi
+done
 
 # Validate every wrapper target before setup makes any changes. A pre-existing
 # different file is user-owned until the operator explicitly opts into a
@@ -211,18 +223,18 @@ fi
 # --- 4. apply the feature patch (idempotent) ------------------------------
 info "Applying feature patch"
 if [ "$DRY_RUN" -eq 1 ]; then
-  if git -C "$INSTALL_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
+  if git -C "$INSTALL_DIR" apply --check --whitespace=error-all "$PATCH_FILE" 2>/dev/null; then
     echo "  would apply: $(basename "$PATCH_FILE")"
   else
     echo "  patch does not apply cleanly here (already applied, or wrong commit)"
   fi
-elif git -C "$INSTALL_DIR" apply --reverse --check "$PATCH_FILE" 2>/dev/null; then
+elif git -C "$INSTALL_DIR" apply --reverse --check --whitespace=error-all "$PATCH_FILE" 2>/dev/null; then
   # It reverse-applies, so it is already in the tree. Re-running is a no-op.
   ok "patch already applied"
-elif git -C "$INSTALL_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
-  git -C "$INSTALL_DIR" apply "$PATCH_FILE"
+elif git -C "$INSTALL_DIR" apply --check --whitespace=error-all "$PATCH_FILE" 2>/dev/null; then
+  git -C "$INSTALL_DIR" apply --whitespace=error-all "$PATCH_FILE"
   ok "patch applied"
-elif git -C "$INSTALL_DIR" apply --3way "$PATCH_FILE" 2>/dev/null; then
+elif git -C "$INSTALL_DIR" apply --3way --whitespace=error-all "$PATCH_FILE" 2>/dev/null; then
   # Plain apply did not fit, but a 3-way merge against the blobs recorded in
   # the patch resolved the drift cleanly.
   ok "patch applied (3-way merge)"
@@ -242,7 +254,7 @@ if [ -x "$HERMES_BIN" ]; then
   ok "Hermes executable already exists: $HERMES_BIN — skipping upstream installer"
 elif [ -x "$INSTALL_DIR/setup-hermes.sh" ]; then
   info "Running upstream installer (setup-hermes.sh)"
-  run bash "$INSTALL_DIR/setup-hermes.sh"
+  run env HERMES_HOME="$HERMES_HOME" bash "$INSTALL_DIR/setup-hermes.sh"
   ok "upstream installer finished"
 else
   warn "setup-hermes.sh not found — falling back to a plain venv + editable install"
@@ -278,7 +290,6 @@ fi
 info "Seeding config from examples"
 run mkdir -p "$HERMES_HOME"
 
-ENV_TARGET="$HERMES_HOME/.env"
 if [ -f "$ENV_TARGET" ]; then
   ok ".env exists — left untouched"
 else
@@ -287,8 +298,6 @@ else
   ok "created $ENV_TARGET (all values empty — fill in your keys)"
 fi
 
-CONFIG_TARGET="$HERMES_HOME/config.yaml"
-OVERLAY="$STARTER_DIR/config.example.yaml"
 if [ ! -f "$CONFIG_TARGET" ]; then
   run cp "$OVERLAY" "$CONFIG_TARGET"
   ok "created $CONFIG_TARGET from the overlay"
@@ -315,7 +324,7 @@ Next steps:
   1. Put your API keys in $ENV_TARGET  (never commit this file)
   2. Set your Telegram/Discord allowlist in the same file — an agent with no
      allowlist will talk to anyone who finds it.
-  3. Start it:  $HERMES_BIN
+  3. Start it:  HERMES_HOME='$HERMES_HOME' $HERMES_BIN
   4. The optional coding wrappers use your separately installed Claude/Codex
      subscriptions. Check them with: claude auth status; codex login status
 

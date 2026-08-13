@@ -16,7 +16,7 @@ This repo is *not* Hermes Agent. Before you open a PR here, check:
 make verify
 ```
 
-That runs everything CI runs: `bash -n` + shellcheck, `compileall`, the test suite, the leak audit, the gitleaks secret-scan gate (current tree + full history; install gitleaks 8.30.1 to run it locally), and `git apply --check` of the patch against a *fresh* clone of the pinned upstream commit (needs network). If `make verify` is green, CI will be too.
+That runs everything CI runs: `bash -n` + required shellcheck, `compileall`, the required pytest + PyYAML test suite, the leak audit, the required gitleaks 8.30.1 secret-scan gate (current tree + full history), and `git apply --check --whitespace=error-all` of the patch against a *fresh* clone of the pinned upstream commit (needs network). Missing verifier dependencies fail closed. If `make verify` is green, CI will be too.
 
 ## The rules that actually matter
 
@@ -52,8 +52,8 @@ Every step checks its own end state first, and every mutation goes through `run(
 
 ```bash
 cd ~/hermes-agent                       # your patched checkout
-git diff > ~/hermes-cli-starter/patches/voice-and-desktop-features.patch
-cd ~/hermes-cli-starter && make verify
+git diff > ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
+cd ~/hermes-x-jasper && make verify
 ```
 
 Then read your own diff before you commit it. A patch generated from a working tree picks up whatever else is in that tree — that is exactly how a home path or a bot token gets published.

@@ -64,7 +64,7 @@ PUBLIC_MARKER_ADAPTATIONS = {
 PUBLIC_DOC_ADAPTATIONS = {
     "README.md": {
         "source_sha256": "0b071654d8eee01d5239f2560554d1390c09c484f4f0a530acd913a5968d2442",
-        "public_sha256": "a020ce9bafbf8fe893130d5ddfb5ff1069a02d57e8e0f6652d19e5ee9153236e",
+        "public_sha256": "8f923802ecfe88916cdd30fa48b9782d34bec18d08cccae9ff8398adf9903af7",
     },
     "docs/phase-a-plan.md": {
         "source_sha256": "8592aac555f2fbadaa8cf8861513f99d1b5f350af738da2fa21f5f5024b21632",
@@ -192,6 +192,9 @@ class CoderStackSnapshotTest(unittest.TestCase):
         stack_readme = (STACK / "README.md").read_text(encoding="utf-8")
         parent_readme = (REPO / "README.md").read_text(encoding="utf-8")
         self.assertIn(SOURCE_COMMIT, stack_readme)
+        self.assertIn(
+            "https://github.com/JasperKallfelz/hermes-coder-stack", stack_readme
+        )
         self.assertIn(SOURCE_COMMIT, parent_readme)
         self.assertIn("MIT License", stack_readme)
         self.assertTrue((REPO / "LICENSE").is_file())

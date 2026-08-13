@@ -93,9 +93,9 @@ This directory is a self-contained, public-safe snapshot: the runnable stack
 test suite under `tests/`. It carries no Git history, account identifiers, real
 paths, journals, or runtime state.
 
-The snapshot source is commit
-`2a74f958cc1eb226584fdc51dfe72cebfc22ddab` from the separately maintained
-Hermes Coder Stack repository. The runnable wrappers (`bin/hermes-coder`,
+The authoritative public source is the
+[Hermes Coder Stack repository](https://github.com/JasperKallfelz/hermes-coder-stack),
+at commit `2a74f958cc1eb226584fdc51dfe72cebfc22ddab`. The runnable wrappers (`bin/hermes-coder`,
 `bin/hermes-coder-flow`), the gate policy, and `tests/test_security_hardening.py`
 are copied byte-for-byte. Two self-test files —
 `tests/test_hermes_coder.py` and `tests/test_hermes_coder_flow.py` — carry a
