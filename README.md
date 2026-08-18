@@ -3,40 +3,67 @@
 > [!WARNING]
 > **Alpha.** This starter is under active development and not yet stable. Interfaces, the feature patch, and the config layout may change without notice. Expect rough edges — pin what you depend on.
 
-A one-command setup for a **personalised [Hermes Agent](https://github.com/NousResearch/hermes-agent)**: persistent memory, subagent delegation, a browser that drives your *real* Chrome, code execution, streaming replies, and polished Telegram + TTS voice ergonomics.
+**A reproducible personal-agent layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent).** It keeps the upstream agent intact, then adds a small, auditable set of interaction features and companion modules: durable memory and delegation from Hermes itself; real-browser control, Telegram/TTS ergonomics, subscription-backed coding workflows, a local Second Brain starter, and optional self-only messaging bridges.
+
+This is not a fork that silently drifts. The installer checks out one **pinned, tested upstream commit**, applies one **reversible patch**, and keeps private configuration and secrets outside this repository. The optional modules are explicitly separated from the core runtime, so you can adopt only the pieces you understand and need.
 
 > [!IMPORTANT]
 > **This is an unofficial community starter. It is not affiliated with, endorsed by, or maintained by Nous Research.**
-> Hermes Agent itself is theirs (MIT). This repo contains a pinned installer,
-> feature patch, example config, voice helpers, an optional Second Brain starter,
-> and an independently maintained public coding-wrapper snapshot. For the real
-> Hermes Agent, go to [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
+> Hermes Agent itself is theirs (MIT). This repository contains a pinned installer, feature patch, example configuration, voice helpers, an optional Second Brain starter, and an independently maintained public coding-wrapper snapshot. For the core agent, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
+
+---
+
+## Why this setup
+
+- **Power without a black box.** Hermes supplies the agent loop, tools, memory, delegation, code execution, and platform adapters. This starter keeps custom runtime changes visible in one patch and makes optional systems separate modules.
+- **Reproducible instead of fragile.** The pinned upstream revision gives the installer, patch, config, documentation, and tests one known base. You can review the exact delta, then upgrade deliberately rather than discover an upstream breakage after the fact.
+- **Personal context with clear boundaries.** Your keys, channel allowlists, and normal Hermes state live under `~/.hermes/`, never in git. The Second Brain scans only approved roots; messaging bridges are loopback-only and do nothing until installed.
+- **Agentic coding without silent API bills.** The coding wrappers use your authenticated Claude Code and Codex CLIs, preserve an isolated worktree, run deterministic gates, and route an independent vendor review before any integration decision.
+- **Capable interaction surfaces, explicitly enabled.** The patch can attach Hermes to a dedicated, logged-in Chrome debugging profile; Telegram and local TTS are polished without making them load-bearing. WhatsApp and Signal remain opt-in self-chat bridges.
+- **Safe to adopt and undo.** Setup is idempotent, config overlays do not clobber existing values, allowlists protect reachable channels, and the patch can be inspected or reversed as a single git diff.
+
+### System at a glance
+
+```text
+                  Your requests: local CLI · Telegram · optional self-chat bridges
+                                             │
+                                             ▼
+                            Hermes Agent (pinned upstream core)
+                memory · context · tools · delegation · code execution · streaming
+                              │                         │
+                    private runtime               auditable feature patch
+                  ~/.hermes/ config + .env       auto-CDP · TTS overrides · Telegram polish
+                              │                         │
+                              └───────────────┬─────────┘
+                                              ▼
+                              Optional local companion systems
+              coder-stack: isolated, reviewed CLI worktrees · second-brain: approved-root sync
+```
+
+The separation is the design: **upstream** remains the agent platform; the **patch** is the small runtime delta; `~/.hermes/` is your private runtime; and `coder-stack/`, `second-brain/`, and `messaging/` are opt-in companion modules with their own boundaries. That makes each layer understandable, reviewable, and independently removable.
 
 ---
 
 ## What you get
 
-| Feature | What it does | Source |
+| System | What it does | Origin |
 | --- | --- | --- |
-| **Persistent memory** | Curated long-term memory + a user profile injected into the system prompt | upstream |
+| **Persistent memory** | Curated long-term memory plus a user profile, injected into the system prompt | upstream |
 | **Context engine** | Built-in compressor, or swap in LCM (Lossless Context Management) | upstream |
-| **Delegation** | `delegate_task` spawns subagents, optionally on a cheaper/faster model | upstream |
-| **Code execution** | `execute_code` runs Python that calls tools over RPC, keeping results out of the context window | upstream |
-| **Streaming** | Token-by-token replies on chat platforms | upstream |
-| **Custom TTS** | Any local binary as a TTS provider (`type: command`) | upstream |
-| **Auto-CDP browser** | Points Hermes at your logged-in Chrome and launches it on demand — no more bot walls | **patch** |
-| **TTS runtime overrides** | Per-call provider/voice overrides for the TTS tool | **patch** |
-| **Telegram polish** | Location-request keyboards are cleaned up automatically after a share | **patch** |
-| **JARVIS-style voice** | Edge TTS + an ffmpeg filter chain for a filtered assistant voice | script |
-| **Claude/Codex coding flow** | Bounded subscription-CLI routing, deterministic gates, isolated worktrees, and opposite-vendor review | vendored module |
-| **Local Second Brain starter** | Optional approved-root scanner, SQLite state, dry-run sync, and explicit OpenViking CLI export of approved excerpts | module |
-| **Messaging bridges (WhatsApp + Signal)** | Opt-in macOS launchd setup for a loopback WhatsApp Baileys bridge (self-chat) and a `signal-cli` JSON-RPC daemon | module |
+| **Delegation** | `delegate_task` spawns subagents; optional routing lets a strong coordinator use faster workers | upstream |
+| **Code execution** | `execute_code` runs Python that calls tools over RPC, so bulky intermediate results stay out of the context window | upstream |
+| **Streaming + custom TTS** | Token-by-token replies and command-based local speech providers | upstream |
+| **Auto-CDP browser** | Uses a dedicated, real Chrome debugging profile rather than a disposable headless session; can start it on demand | **patch** |
+| **TTS overrides + Telegram polish** | Per-call voice/provider selection and automatic cleanup of location-request keyboards | **patch** |
+| **JARVIS-style voice** | Edge TTS plus an ffmpeg filter chain for a filtered assistant voice | script |
+| **Claude/Codex coding flow** | Subscription-CLI routing, deterministic gates, isolated worktrees, and opposite-vendor review | vendored module |
+| **Local Second Brain starter** | Approved-root scanning, local state, dry-run sync, and explicit OpenViking CLI export of approved excerpts | module |
+| **Messaging bridges (WhatsApp + Signal)** | Opt-in macOS launchd setup for a loopback WhatsApp self-chat bridge and a `signal-cli` JSON-RPC daemon | module |
 
-"patch" = added by `patches/voice-and-desktop-features.patch`. "script" = `scripts/`.
-"module" = an independent opt-in module in this repo (`second-brain/`, `messaging/`).
+**Origin legend:** **upstream** is provided by Hermes Agent; **patch** is added by `patches/voice-and-desktop-features.patch`; **script** lives in `scripts/`; **module** is an independent opt-in component in this repository. Nothing is vendored into the upstream Hermes checkout beyond the explicitly applied patch.
 
 > [!NOTE]
-> The Discord voice stack (voice mixer, barge-in, join greeting, streaming STT, voice jobs) has been split out of the main patch and is **not currently shipped** here. It is being rearchitected (isolated Node media gateway) and will return once it is stable.
+> The Discord voice stack (voice mixer, barge-in, join greeting, streaming STT, voice jobs) has been split out of the main patch and is **not currently shipped** here. It is being rearchitected as an isolated Node media gateway and will return once stable.
 
 ---
 
@@ -172,32 +199,37 @@ TELEGRAM_ALLOWED_USERS=
 
 ---
 
-## Architecture
+## Architecture: what runs where, and why
 
-```
-this repo                     what it touches
-─────────────────────────────────────────────────────────────────────
-setup.sh ──────────────────►  clones NousResearch/hermes-agent @ pinned commit
-                              runs upstream setup-hermes.sh (venv/bin/hermes)
-                                 │
-patches/voice-and-           ──►│ git apply
-desktop-features.patch          │
-                                ▼
-                       ~/hermes-agent/          (patched upstream checkout)
-                         tools/                 browser_tool (auto-CDP), tts_tool
-                         hermes_cli/            browser_connect (auto-CDP launch)
-                         plugins/platforms/     telegram adapter polish
-                                ▲
-config.example.yaml ───────────►│ merge (never blind-overwrites)
-.env.example ──────────────────►│
-                                ▼
-                       ~/.hermes/               config.yaml, .env, state
-scripts/jarvis_style_tts.py ─►  wired in as a `type: command` TTS provider
-scripts/parakeet_stt_limited.py  local bilingual STT helper
-coder-stack/bin/* ──────────►  ~/.local/bin/hermes-coder{,-flow} (default)
+```text
+hermes-x-jasper (this repository)               private runtime on your machine
+──────────────────────────────────               ───────────────────────────────
+setup.sh                                         ~/hermes-agent/
+  ├─ installs optional coding wrappers             └─ pinned upstream checkout
+  ├─ clones NousResearch/hermes-agent                 ├─ upstream agent runtime
+  ├─ checks out the tested commit                     └─ one applied feature patch
+  ├─ invokes upstream setup-hermes.sh                         │
+  └─ applies one auditable patch                              ▼
+config.example.yaml ─────────────────────►       ~/.hermes/config.yaml
+  safe overlay; existing values win                 runtime settings and preferences
+.env.example ────────────────────────────►       ~/.hermes/.env
+  placeholders only                                  provider keys + channel allowlists
+scripts/jarvis_style_tts.py ────────────►       optional command TTS provider
+coder-stack/bin/* ──────────────────────►       ~/.local/bin/hermes-coder{,-flow}
+
+second-brain/ and messaging/                       separate opt-in local modules
+  their own manifests/installers                    never started by normal Hermes setup
 ```
 
-The patch is deliberately small: the auto-CDP browser, TTS runtime overrides, and Telegram keyboard cleanup, each with tests. Hermes Agent itself is not vendored; applying the patch intentionally leaves tracked working-tree changes in the upstream checkout that you can inspect with `git diff`. The Discord voice stack and the upstream detach-running-turn feature are intentionally **not** included in this patch. The independent public coding-wrapper snapshot is intentionally vendored under `coder-stack/` without its source repository's Git history or runtime data.
+### The layers
+
+1. **Upstream is the foundation.** Nous Research's Hermes Agent owns the agent loop: model providers, memory, context management, tools, code execution, delegation, platform adapters, and streaming.
+2. **This repository makes a known deployment repeatable.** `setup.sh` fetches the exact upstream revision the patch was verified against, then invokes the upstream installer rather than reimplementing it. The result is still a plain checkout of upstream Hermes, not a vendored copy.
+3. **The patch is narrow and inspectable.** `patches/voice-and-desktop-features.patch` adds the auto-CDP browser path, TTS runtime overrides, and Telegram keyboard cleanup. It can be checked with `git diff`, skipped, or reversed as one unit. The Discord voice stack is deliberately not part of this current patch.
+4. **Your private runtime is separate.** `~/.hermes/config.yaml` contains configuration and `~/.hermes/.env` contains keys and allowlists. The installer only seeds missing files; it never commits secrets or blindly overwrites an existing setup. Preview the config overlay before you merge it.
+5. **Companion systems are independent by design.** The coding wrappers are a public-safe snapshot that orchestrates locally authenticated subscription CLIs; the Second Brain and messaging bridges each have their own opt-in installation and security boundaries. They extend a personal workflow without quietly widening the core agent's permissions.
+
+The patch intentionally leaves tracked working-tree changes in the upstream checkout: that is the audit trail. You can inspect the exact delta against the pinned base at any time, reset it, or reverse it without losing upstream Hermes.
 
 Pinned upstream commit: **`3ef6bbd201263d354fd83ec55b3c306ded2eb72a`** (Hermes Agent v0.19.0, release tag `v2026.7.20`).
 
