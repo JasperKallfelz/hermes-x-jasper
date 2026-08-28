@@ -31,7 +31,7 @@ jobs:
         run: modules/pi-runtime/setup.sh "$PI_INSTALL_DIR"
 
       - name: Prove exact patch and 1,419-case no-retry/no-skip release gate
-        run: modules/pi-runtime/verify.sh --object-store "$PI_INSTALL_DIR"
+        run: modules/pi-runtime/verify.sh --uv "$(command -v uv)" --object-store "$PI_INSTALL_DIR"
 
       - name: Verify reviewed npm lock with npm 11.17.0
         shell: bash
@@ -131,5 +131,5 @@ jobs:
 
       - name: Build twice no-cache and run real 5-case containment E2E
         run: >-
-          modules/pi-runtime/verify.sh --object-store "$PI_INSTALL_DIR"
+          modules/pi-runtime/verify.sh --uv "$(command -v uv)" --object-store "$PI_INSTALL_DIR"
           --reproducibility --docker "$PI_IMAGE_ID"

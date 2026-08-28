@@ -187,6 +187,58 @@ def test_dry_run_has_no_filesystem_network_global_or_auth_side_effects(tmp_path:
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
 
 
+def test_wrappers_prefer_python311_over_an_old_python3(tmp_path: Path):
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    marker = tmp_path / "old-python-used"
+    old = tools / "python3"
+    old.write_text(
+        "#!/bin/sh\nprintf used > \"$OLD_PYTHON_MARKER\"\nexit 1\n",
+        encoding="utf-8",
+    )
+    old.chmod(0o755)
+    (tools / "python3.11").symlink_to(Path(sys.executable).resolve())
+    env = os.environ.copy()
+    env.update(
+        PATH=str(tools) + os.pathsep + "/usr/bin:/bin",
+        OLD_PYTHON_MARKER=str(marker),
+    )
+    target = tmp_path / "install"
+    setup = subprocess.run(
+        [str(MODULE_DIR / "setup.sh"), "--dry-run", str(target)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    verify = subprocess.run(
+        [str(MODULE_DIR / "verify.sh"), "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+    assert not target.exists()
+    assert not marker.exists()
+
+
+def test_explicit_uv_path_is_absolute_executable_and_version_pinned(tmp_path: Path):
+    uv = tmp_path / "uv-0.9.28"
+    uv.write_text(
+        "#!/bin/sh\n[ \"${1:-}\" = --version ] && { echo 'uv 0.9.28'; exit 0; }\nexit 99\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    manifest, _ = pi_module.load_manifest()
+    assert pi_module.resolve_uv_executable(str(uv), manifest) == str(uv.resolve())
+    with pytest.raises(pi_module.ModuleError, match="absolute"):
+        pi_module.resolve_uv_executable("relative-uv", manifest)
+
+
 def test_default_setup_executes_only_git_and_never_runtime_or_global_tools(tmp_path: Path, monkeypatch):
     source, manifest, patch = fixture_contract(tmp_path)
     target = tmp_path / "install"
@@ -281,6 +333,7 @@ def test_ci_has_load_bearing_linux_arm64_windows_and_aggregate_contracts():
     assert "test_drive_letter_colon_is_not_a_path_separator" in pi
     assert "--file-retries 0 --require-no-skips" in pi
     assert "--reproducibility --docker" in pi and IMAGE_ID in pi
+    assert '--uv "$(command -v uv)"' in pi
     assert "1,419-case" in pi
     assert "needs: pi-runtime" in release and "needs: [pi-runtime, gates]" in release
 

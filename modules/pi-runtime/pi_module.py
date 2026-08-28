@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -513,6 +514,27 @@ def _tool_version(command: Sequence[str], expected: str) -> None:
         raise ModuleError(f"{command[0]} version is {actual!r}, expected {expected!r}")
 
 
+def resolve_uv_executable(value: str | None, manifest: Mapping[str, Any]) -> str:
+    if value:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            raise ModuleError("--uv must be an absolute executable path")
+        try:
+            resolved = candidate.resolve(strict=True)
+            info = resolved.stat()
+        except (OSError, RuntimeError) as exc:
+            raise ModuleError("--uv executable is unavailable") from exc
+        if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+            raise ModuleError("--uv must resolve to a regular executable")
+        executable = str(resolved)
+    else:
+        executable = shutil.which("uv") or ""
+        if not executable:
+            raise GapError("uv is unavailable; pass --uv /absolute/path/to/uv-0.9.28")
+    _tool_version([executable, "--version"], f"uv {manifest['toolchain']['uv']}")
+    return executable
+
+
 def _assert_summary(output: str, expected_passed: int) -> None:
     matches = re.findall(
         r"Summary:.*?([0-9,]+) tests passed, ([0-9,]+) failed, ([0-9,]+) skipped",
@@ -528,10 +550,10 @@ def _assert_summary(output: str, expected_passed: int) -> None:
         )
 
 
-def run_offline_release_suite(repo: Path, manifest: Mapping[str, Any], offline: bool) -> None:
+def run_offline_release_suite(
+    repo: Path, manifest: Mapping[str, Any], offline: bool, uv: str
+) -> None:
     toolchain = manifest["toolchain"]
-    _tool_version(["uv", "--version"], f"uv {toolchain['uv']}")
-    uv = shutil.which("uv") or "uv"
     env = _runtime_env(offline=offline)
     if not offline:
         run([uv, "python", "install", str(toolchain["python"])], cwd=repo, env=env)
@@ -585,16 +607,14 @@ def _docker_json(image: str) -> Mapping[str, Any]:
     return info
 
 
-def run_docker_e2e(repo: Path, manifest: Mapping[str, Any], image_arg: str) -> None:
+def run_docker_e2e(
+    repo: Path, manifest: Mapping[str, Any], image_arg: str, uv: str
+) -> None:
     image = validate_requested_image(image_arg, manifest)
     info = _docker_json(image)
     if info.get("Id") != image or info.get("Os") != "linux" or info.get("Architecture") != "arm64":
         raise ModuleError("loaded Docker image identity/platform does not match manifest")
-    uv = shutil.which("uv")
-    if uv is None:
-        raise GapError("uv is unavailable; Docker E2E dependencies cannot be verified")
     toolchain = manifest["toolchain"]
-    _tool_version(["uv", "--version"], f"uv {toolchain['uv']}")
     env = _runtime_env()
     run([uv, "python", "install", str(toolchain["python"])], cwd=repo, env=env)
     run(
@@ -666,6 +686,7 @@ def verify_module(
     object_store_arg: str | None,
     fetch: bool,
     offline: bool,
+    uv_arg: str | None,
     docker_image: str | None,
     reproducibility: bool,
     integrity_only: bool,
@@ -686,13 +707,16 @@ def verify_module(
     )
     if docker_image is not None:
         validate_requested_image(docker_image, manifest)
+    needs_uv = docker_image is not None or not (reproducibility or integrity_only)
+    uv = resolve_uv_executable(uv_arg, manifest) if needs_uv else None
     with tempfile.TemporaryDirectory(prefix="hermes-pi-verify.") as raw:
         checkout = Path(raw) / "hermes"
         initialize_checkout(checkout, manifest, patch_path, object_store)
         plain_apply(checkout, manifest, patch_path)
         print("PASS integrity: manifest, objects, patch diff, plain apply, and feature tree")
         if docker_image is None and not reproducibility and not integrity_only:
-            run_offline_release_suite(checkout, manifest, offline)
+            assert uv is not None
+            run_offline_release_suite(checkout, manifest, offline, uv)
             print("PASS offline release suite: 1,419 passed; zero failures/skips/retries")
         else:
             print("GAP offline release suite: not requested by this verification invocation")
@@ -702,7 +726,8 @@ def verify_module(
         else:
             print("GAP reproducibility: not requested (use --reproducibility on native linux/arm64)")
         if docker_image is not None:
-            run_docker_e2e(checkout, manifest, docker_image)
+            assert uv is not None
+            run_docker_e2e(checkout, manifest, docker_image, uv)
             print("PASS Docker containment/egress E2E: 5/5")
         else:
             print("GAP Docker containment/egress E2E: not requested (use --docker with the exact ID)")
@@ -720,6 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--object-store")
     source.add_argument("--fetch", action="store_true")
     verify.add_argument("--offline", action="store_true")
+    verify.add_argument("--uv", metavar="ABSOLUTE_UV_EXECUTABLE")
     verify.add_argument("--docker", metavar="SHA256_IMAGE_ID")
     verify.add_argument("--reproducibility", action="store_true")
     verify.add_argument("--integrity-only", action="store_true", help=argparse.SUPPRESS)
@@ -746,6 +772,7 @@ def main(argv: list[str] | None = None) -> int:
                 object_store_arg=args.object_store,
                 fetch=args.fetch,
                 offline=args.offline,
+                uv_arg=args.uv,
                 docker_image=args.docker,
                 reproducibility=args.reproducibility,
                 integrity_only=args.integrity_only,

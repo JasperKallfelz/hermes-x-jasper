@@ -37,6 +37,16 @@ There is **no current authenticated provider/model E2E**. The previously
 available Pi OAuth had expired, so that lane was not claimed and no auth
 material is distributed.
 
+The shell entrypoints choose a working `python3.11` before any older unversioned
+`python3`. Verification also requires the exact uv 0.9.28 from the manifest.
+Keep that tool isolated from the uv version used by other components and pass its
+absolute executable path explicitly:
+
+```bash
+PI_UV=/absolute/path/to/isolated/uv-0.9.28
+"$PI_UV" --version   # must print exactly: uv 0.9.28
+```
+
 ## Safe setup
 
 Choose a new, explicit directory outside this starter and outside any live
@@ -77,9 +87,10 @@ The default lane resolves only locked dependencies, then executes the
 model-free release suite with networking disabled during the test command:
 
 ```bash
-modules/pi-runtime/verify.sh --object-store /absolute/path/to/object-store
+modules/pi-runtime/verify.sh --uv "$PI_UV" \
+  --object-store /absolute/path/to/object-store
 # or, explicitly permit bounded public exact-object fetches:
-modules/pi-runtime/verify.sh --fetch
+modules/pi-runtime/verify.sh --uv "$PI_UV" --fetch
 ```
 
 For a completely offline run, the exact uv/Python artifacts and dependency
@@ -87,7 +98,7 @@ cache must already exist. An incomplete cache is reported as a gap and exits
 nonzero; it is never converted into a pass:
 
 ```bash
-modules/pi-runtime/verify.sh --offline \
+modules/pi-runtime/verify.sh --uv "$PI_UV" --offline \
   --object-store /absolute/path/to/object-store
 ```
 
@@ -97,7 +108,8 @@ mutable tags and other image IDs are rejected before Docker is invoked:
 
 ```bash
 IMAGE_ID=sha256:e89f45110e9277902bafbf49009e842bc9e38180e668fea8a6ff3dcdb2dd2cdf
-modules/pi-runtime/verify.sh --object-store /absolute/path/to/object-store \
+modules/pi-runtime/verify.sh --uv "$PI_UV" \
+  --object-store /absolute/path/to/object-store \
   --reproducibility --docker "$IMAGE_ID"
 ```
 
