@@ -1,114 +1,98 @@
 # Hermes Coder Stack
 
-`bin/hermes-coder` is a Python 3.9+, standard-library-only Claude/Codex runner for subscription-backed coding work. It provides adaptive capability lanes, cross-vendor fallback, classified failures, bounded execution, a privacy-safe run journal, persistent quota/auth cooldowns, and deterministic argv-based quality gates.
+Hermes ships two deliberately separate model workflows:
 
-`bin/hermes-coder-flow` adds the Phase C inline flow: preflight, lane selection, one isolated branch/worktree, implementation, independent opposite-vendor review, at most one repair, a fresh review, and final gates. Every model stage is synchronous and goes through `bin/hermes-coder`; neither command calls a model API directly.
+- `bin/hermes-coder` and `bin/hermes-coder-flow` are Codex-only automation.
+- `tools/deep-chat/` is an explicit, optional persistent Claude tool. It is never a coder or flow fallback.
 
-## Quick start
+Both workflows invoke local subscription/OAuth CLIs. They do not call model APIs directly, require API keys, or create direct API-billing traffic.
+
+## Codex-only runner
+
+`bin/hermes-coder` is a standard-library Python runner with bounded lane escalation, classified failures, privacy-safe journaling, persistent quota/auth cooldowns, deterministic argv gates, and fail-closed process supervision.
+
+| Lane | Codex model | Reasoning effort |
+|---|---|---|
+| `fast` | `gpt-5.6-luna` | `low` |
+| `normal` | `gpt-5.6-terra` | `medium` |
+| `complex` | `gpt-5.6-sol` | `high` |
+| `frontier` | `gpt-5.6-sol` | `max` |
+| `security` | `gpt-5.6-sol` | `max` |
+
+`--primary` accepts only `auto` and `codex`; `auto` resolves to Codex. The aliases `easy` → `fast` and `heavy` → `frontier`, task modes, `--tier`, `--no-escalate`, and dry-run remain supported. Read-only tasks use the Codex read-only sandbox.
 
 ```console
 bin/hermes-coder --task implement --lane normal \
   --workdir /path/to/repository \
   "Implement the requested change and run its tests."
+
+bin/hermes-coder --doctor --requirement codex --doctor-timeout 5
 ```
 
-The existing lanes (`fast`, `normal`, `complex`, `frontier`, and `security`), aliases (`easy` and `heavy`), task modes, automatic primary selection, `--tier`, `--no-escalate`, and dry-run command display remain supported. Read-only `inspect`, `plan`, and `review` tasks retain their original Claude safe-mode and Codex read-only sandbox behavior.
+Doctor runs only `codex login status`, discards its output, and emits a bounded privacy-safe JSON result. If `CODEX_HOME` is unset, the runner may honor `~/.codex-active-home` when it points to an authenticated directory beneath the current home.
 
-Execution is finite by default: at most eight planned model attempts, a one-hour timeout per model attempt, a two-hour run wall clock, and at most three quality failures. Override these with `--max-attempts`, `--attempt-timeout`, `--wall-timeout`, and `--max-quality-failures`.
+Attempts are finite: one fresh Codex process per planned lane, at most eight attempts by default, a one-hour attempt timeout, a two-hour wall clock, and at most three quality failures. Quota/auth failure opens the Codex circuit and does not route to another provider.
 
-Before an autonomous run, use the model-free subscription health check:
+## Codex-only flow
 
-```console
-bin/hermes-coder --doctor any
-bin/hermes-coder --doctor both --doctor-timeout 5
-```
+`bin/hermes-coder-flow` performs, serially:
 
-The Doctor checks the configured Claude executable with `claude auth status` and the configured Codex executable with `codex login status`. It emits one privacy-safe JSON document with stable reason IDs and returns `0` only when the requested `any` or `both` readiness condition is met. Auth command output, account identifiers, tokens, and credential paths are discarded.
+1. Git, gate, state-path, and Codex Doctor preflight;
+2. optional read-only lane classification;
+3. implementation in one new isolated worktree;
+4. an independent read-only review in a fresh Codex process;
+5. optionally one fresh repair process and one fresh re-review process; and
+6. model-free final gates.
 
-## Quality gates
-
-Gates run only for `implement` tasks, sequentially after a model exits 0. A model attempt succeeds only after every gate passes. Gate failures advance to the next already-planned model; no new attempts are generated.
-
-For trusted automation that needs a read-only model's answer without its mixed
-tool stream, `--final-output-only` is available only with `--task inspect` or
-`--task review`. It uses each vendor's native JSON output, validates a bounded
-result, and emits only the successful attempt's isolated final answer. Ordinary
-runs retain their existing live stdout/stderr behavior.
-
-```console
-bin/hermes-coder --gate-file .hermes-gates.json "Implement the change"
-
-bin/hermes-coder \
-  --gate 'unit=["python3","-m","unittest","discover","-s","tests"]' \
-  --gate 'compile=["python3","-m","py_compile","bin/hermes-coder"]' \
-  "Implement the change"
-```
-
-Gate commands are argv arrays and are never evaluated by a shell. See [Reliability and quality gates](docs/reliability-and-gates.md) for the versioned schema, exit codes, state paths, and safety details.
-
-This repository tracks [`.hermes-gates.json`](.hermes-gates.json) with the complete unittest suite, off-worktree `py_compile` checks for both binaries and the relevant tests, and `git diff --check`. Every command is an argv array and is portable across macOS/Linux installations with `python3` and Git on `PATH`.
-
-## Phase C flow
-
-Run from a clean source repository containing a tracked `.hermes-gates.json`:
+Using the same provider is intentional; process/session continuity is not reused between stages. The flow has one writer at a time and never commits, merges, rebases, pushes, opens a pull request, removes a worktree, or cleans working files. Branches and worktrees remain for manual inspection.
 
 ```console
 bin/hermes-coder-flow --lane auto \
   "Implement the requested change and update its tests."
+
+bin/hermes-deep-work /path/to/repository --lane complex --dry-run \
+  "Plan a complex implementation."
 ```
 
-The source checkout is never used for implementation. Before classification or worktree creation, the flow invokes the resolved runner's Doctor with requirement `both`; an unavailable, timed-out, or malformed result fails closed. The flow then selects its lane, creates a unique `hermes/flow/...` branch and worktree under `~/.hermes/worktrees`, and always leaves both in place for manual inspection. Classifier and review stages use native final-answer isolation before validating either a secret-tagged verdict or an exact raw JSON document. The flow also uses a private runner-result pipe for actual-vendor attestation, source/common-Git-control fingerprints, source-scoped locking, immutable gate-policy checks, and fail-closed gate worktree snapshots. It never commits, merges, rebases, pushes, opens a pull request, or removes a worktree. Use `--gate-file PATH` for an external gate document or the explicit `--no-gates` escape hatch. `--dry-run` validates and prints the plan without a Doctor/classifier/model call or any worktree, state, or journal write.
+`bin/hermes-deep-work` is only a portable convenience wrapper for the Codex flow. It finds `hermes-coder-flow` next to itself or through the explicit `HERMES_DEEP_WORK_FLOW` seam.
 
-See [Hermes Coder Flow](docs/hermes-coder-flow.md) for the state machine, review contract, environment overrides, privacy boundary, exit codes, and recovery procedure.
+See [Hermes Coder Flow](docs/hermes-coder-flow.md) for the state machine and [Reliability and quality gates](docs/reliability-and-gates.md) for launch, gate, privacy, and exit contracts.
 
-The original historical Phase A design note is retained at
-[`docs/phase-a-plan.md`](docs/phase-a-plan.md). It is background, not the
-current operating contract; the two documents above describe the implemented
-behavior.
+## Optional Claude Deep Chat
 
-## Tests
-
-The suite uses temporary executable stubs and isolated HOME directories; it never invokes a real model.
+Deep Chat is opt-in and separate from automated coder/flow routing. It creates a named preserved worktree and a resumable Claude subscription session:
 
 ```console
-PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache \
-  python3 -m unittest discover -s tests -v
+tools/deep-chat/hermes-deep-chat start /path/to/repo my-chat \
+  --schema-version 2 -- "Initial task"
+tools/deep-chat/hermes-deep-chat send my-chat -- "Follow-up"
+tools/deep-chat/hermes-deep-chat status my-chat
+tools/deep-chat/hermes-deep-chat reconcile my-chat
+tools/deep-chat/hermes-deep-chat close my-chat
+```
 
-PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache \
-  python3 -m py_compile bin/hermes-coder bin/hermes-coder-flow \
-  tests/test_hermes_coder.py tests/test_hermes_coder_flow.py \
-  tests/test_security_hardening.py
+The bridge and worker keep prompt/model output out of durable bridge state and the resumable-session registry. They never commit, push, merge, delete worktrees, forget workers automatically, or remove locks they did not acquire. Installation is a separate human action:
 
+```console
+tools/deep-chat/install-local.sh
+```
+
+See [Deep Chat](tools/deep-chat/README.md) for dependencies, portable overrides, schemas, and recovery rules.
+
+## Gates and verification
+
+The tracked [gate policy](.hermes-gates.json) runs the full Python suite, the Deep Chat shell suite, Python compilation, shell syntax checks, and a local working-tree `git diff --check`. Gate commands are argv arrays and never pass through a shell interpreter unless the gate explicitly invokes one. CI separately fetches full history and checks the committed event range: a PR merge-base through `HEAD`, or push `before...HEAD`, with an empty-tree fallback for an initial push.
+
+```console
+python3.11 -B -m unittest discover -s tests -q
+bash tools/deep-chat/tests/test_deep_chat.sh
+python3.11 -B -m py_compile bin/hermes-coder bin/hermes-coder-flow \
+  tools/deep-chat/claude_worker.py tests/*.py
+bash -n bin/hermes-deep-work tools/deep-chat/hermes-deep-chat \
+  tools/deep-chat/install-local.sh tools/deep-chat/tests/test_deep_chat.sh
+bin/hermes-coder --gates-only --gate-file .hermes-gates.json \
+  --workdir . --no-journal
 git diff --check
 ```
 
-The parent starter also runs this suite and the compile check from its own
-`make test` / `./verify.sh` and CI.
-
-## License and provenance
-
-This directory is a self-contained, public-safe snapshot: the runnable stack
-(`bin/hermes-coder`, `bin/hermes-coder-flow`), its tracked gate policy
-(`.hermes-gates.json`), the operator docs under `docs/`, and the standard-library
-test suite under `tests/`. It carries no Git history, account identifiers, real
-paths, journals, or runtime state.
-
-The authoritative public source is the
-[Hermes Coder Stack repository](https://github.com/JasperKallfelz/hermes-coder-stack),
-at commit `2a74f958cc1eb226584fdc51dfe72cebfc22ddab`. The runnable wrappers (`bin/hermes-coder`,
-`bin/hermes-coder-flow`), the gate policy, and `tests/test_security_hardening.py`
-are copied byte-for-byte. Two self-test files —
-`tests/test_hermes_coder.py` and `tests/test_hermes_coder_flow.py` — carry a
-single, documented public-only adaptation: privacy-marker fixtures of the form
-`secret = "GATE_RAW_SECRET_…"` are renamed (`SECRET` → `MARKER`) so a public
-full-history secret scan stays green without a blanket allowlist. The rename is
-semantics-preserving and provably narrow — reverting it reproduces the source
-bytes exactly, as enforced by `tests/test_coder_stack_snapshot.py`. Only public
-integration/provenance text and portable path examples in the docs are otherwise
-adapted here.
-
-It is released under the MIT License — the same terms as the parent repository,
-see [`../LICENSE`](../LICENSE). No provider credentials, tokens, or secrets are
-bundled. The runner never calls a model API directly; it drives your own
-subscription-backed Claude and Codex CLIs, which you install and authenticate
-yourself (see the parent `README.md` and `../AGENTS.md`).
+Tests use isolated homes, repositories, and executable doubles; they do not invoke a real model or network service.

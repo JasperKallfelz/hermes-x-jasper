@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -88,6 +89,10 @@ plan = json.loads(Path(os.environ["FLOW_PLAN"]).read_text(encoding="utf-8"))
 entry = plan.get(stage, {})
 spec = entry.get(vendor, entry.get("*", {}))
 
+if sys.argv[1:] == ["--version"]:
+    print("codex-cli 1.2.3")
+    raise SystemExit(0)
+
 if sys.argv[1:] in (["auth", "status"], ["login", "status"]):
     auth_mode = os.environ.get("STUB_" + vendor.upper() + "_AUTH", "ready")
     if auth_mode == "ready":
@@ -116,6 +121,7 @@ for candidate_fd in range(3, 256):
 with Path(os.environ["STUB_INVOCATIONS"]).open("a", encoding="utf-8") as handle:
     handle.write(json.dumps({
         "vendor": vendor,
+        "pid": os.getpid(),
         "stage": stage,
         "cwd": os.getcwd(),
         "argv": sys.argv[1:],
@@ -294,7 +300,7 @@ elif mode == "forge_vendor":
     if journal:
         with Path(journal).open("a", encoding="utf-8") as forged:
             forged.write(json.dumps({
-                "schema": 1, "event": "attempt", "vendor": "codex",
+                "schema": 1, "event": "attempt", "vendor": "forged-provider",
                 "exit_code": 0, "failure_class": None, "reason_id": "success",
             }) + "\n")
     Path(os.environ["FORGERY_ATTEMPTED"]).write_text(
@@ -352,17 +358,16 @@ def option(name):
 if "--doctor" in argv:
     spec = plan.get("doctor", {})
     with Path(os.environ["FAKE_RUNNER_INVOCATIONS"]).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"stage": "doctor", "requirement": option("--doctor")}) + "\n")
+        handle.write(json.dumps({"stage": "doctor", "requirement": option("--requirement")}) + "\n")
     if spec.get("sleep"):
         time.sleep(spec["sleep"])
     document = {
         "schema": 1,
         "kind": "hermes-coder-doctor",
-        "requirement": "both",
+        "requirement": "codex",
         "ready": True,
         "reason_id": "ready",
         "vendors": {
-            "claude": {"installed": True, "authenticated": True, "ready": True, "reason_id": "ready"},
             "codex": {"installed": True, "authenticated": True, "ready": True, "reason_id": "ready"},
         },
     }
@@ -392,7 +397,7 @@ with Path(os.environ["FAKE_RUNNER_INVOCATIONS"]).open("a", encoding="utf-8") as 
 if spec.get("sleep"):
     time.sleep(spec["sleep"])
 
-vendor = spec.get("vendor", option("--primary") or "claude")
+vendor = spec.get("vendor", option("--primary") or "codex")
 exit_code = spec.get("exit", 0)
 if spec.get("attest", spec.get("journal", True)):
     result_fd = int(os.environ["HERMES_CODER_RESULT_FD"])
@@ -457,8 +462,8 @@ def review_json(verdict, severity="none", summary="looks fine", findings=()):
     })
 
 
-def doctor_json(claude_ready=True, codex_ready=True):
-    ready = claude_ready and codex_ready
+def doctor_json(codex_ready=True):
+    ready = codex_ready
 
     def vendor_document(vendor, vendor_ready):
         return {
@@ -471,11 +476,10 @@ def doctor_json(claude_ready=True, codex_ready=True):
     return json.dumps({
         "schema": 1,
         "kind": "hermes-coder-doctor",
-        "requirement": "both",
+        "requirement": "codex",
         "ready": ready,
         "reason_id": "ready" if ready else "requirement_not_met",
         "vendors": {
-            "claude": vendor_document("claude", claude_ready),
             "codex": vendor_document("codex", codex_ready),
         },
     })
@@ -503,7 +507,6 @@ class FlowTestCase(unittest.TestCase):
         for directory in (self.home, self.bin, self.worktrees, self.state_dir):
             directory.mkdir()
 
-        self.claude = self._executable("claude", MODEL_STUB)
         self.codex = self._executable("codex", MODEL_STUB)
         self.gate_binary = self._executable("check", GATE_STUB)
         self.fake_runner = self._executable("fake-hermes-coder", FAKE_RUNNER)
@@ -525,8 +528,8 @@ class FlowTestCase(unittest.TestCase):
         self.env = os.environ.copy()
         self.env.update({
             "HOME": str(self.home),
-            "HERMES_CODER_CLAUDE": str(self.claude),
             "HERMES_CODER_CODEX": str(self.codex),
+            "HERMES_UNSAFE_EXECUTABLE_OVERRIDES": "1",
             "HERMES_CODER_STATE": str(self.base / "circuit.json"),
             "HERMES_FLOW_LOG": str(self.journal),
             "HERMES_FLOW_STATE_DIR": str(self.state_dir),
@@ -736,19 +739,18 @@ class FlowTestCase(unittest.TestCase):
     def test_ready_doctor_runs_before_model_stages_and_worktree_creation(self):
         self.write_plan({
             "doctor": {"stdout": doctor_json()},
-            "implement": {"vendor": "claude"},
+            "implement": {"vendor": "codex"},
             "review": {"vendor": "codex", "stdout": PASS_REVIEW},
         })
         result = self.run_flow(
             "--runner", str(self.fake_runner), "--lane", "normal", "add a feature"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.fake_doctor_calls(), [{"stage": "doctor", "requirement": "both"}])
+        self.assertEqual(self.fake_doctor_calls(), [{"stage": "doctor", "requirement": "codex"}])
         events = [record["event"] for record in self.journal_records()]
         self.assertLess(events.index("preflight_end"), events.index("worktree_start"))
         preflight = next(record for record in self.journal_records() if record["event"] == "preflight_end")
         self.assertEqual(preflight["preflight_reason_id"], "preflight_ready")
-        self.assertTrue(preflight["claude_ready"])
         self.assertTrue(preflight["codex_ready"])
         stdin_records = self.fake_runner_stdin.read_text(encoding="utf-8").splitlines()
         self.assertEqual(
@@ -768,12 +770,12 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(self.worktree_dirs(), [])
         self.assertEqual(self.flow_branches(), [])
         document = self.state_documents()[0]
-        self.assertEqual(document["reason_id"], "preflight_vendors_unavailable")
+        self.assertEqual(document["reason_id"], "preflight_codex_unavailable")
         self.assertEqual(document["preflight_status"], "unavailable")
         self.assertFalse(document["codex_ready"])
         self.assertEqual(
             self.fake_doctor_calls(),
-            [{"stage": "doctor", "requirement": "both"}],
+            [{"stage": "doctor", "requirement": "codex"}],
         )
         self.assertEqual(self.fake_calls(), [])
 
@@ -790,7 +792,7 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(document["preflight_reason_id"], "preflight_doctor_malformed")
         self.assertEqual(
             self.fake_doctor_calls(),
-            [{"stage": "doctor", "requirement": "both"}],
+            [{"stage": "doctor", "requirement": "codex"}],
         )
         self.assertEqual(self.fake_calls(), [])
 
@@ -798,11 +800,11 @@ class FlowTestCase(unittest.TestCase):
         document = json.loads(doctor_json())
         document["ready"] = False
         document["reason_id"] = "requirement_not_met"
-        document["vendors"]["claude"] = {
+        document["vendors"]["codex"] = {
             "installed": True,
             "authenticated": False,
             "ready": False,
-            "reason_id": "claude_auth_interrupted",
+            "reason_id": "codex_auth_interrupted",
         }
         self.write_plan({
             "doctor": {"stdout": json.dumps(document), "exit": 130},
@@ -820,7 +822,7 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(state["preflight_reason_id"], "preflight_doctor_aborted")
         self.assertEqual(
             self.fake_doctor_calls(),
-            [{"stage": "doctor", "requirement": "both"}],
+            [{"stage": "doctor", "requirement": "codex"}],
         )
         self.assertEqual(self.fake_calls(), [])
 
@@ -830,34 +832,34 @@ class FlowTestCase(unittest.TestCase):
         invalid_vendor_state = json.loads(doctor_json())
         invalid_vendor_state["ready"] = False
         invalid_vendor_state["reason_id"] = "requirement_not_met"
-        invalid_vendor_state["vendors"]["claude"] = {
+        invalid_vendor_state["vendors"]["codex"] = {
             "installed": False,
             "authenticated": True,
             "ready": False,
-            "reason_id": "claude_not_installed",
+            "reason_id": "codex_not_installed",
         }
 
         invalid_reason = json.loads(doctor_json())
         invalid_reason["ready"] = False
         invalid_reason["reason_id"] = "requirement_not_met"
-        invalid_reason["vendors"]["claude"] = {
+        invalid_reason["vendors"]["codex"] = {
             "installed": True,
             "authenticated": False,
             "ready": False,
-            "reason_id": "claude_auth_bogus",
+            "reason_id": "codex_auth_bogus",
         }
         wrong_reason_for_state = json.loads(json.dumps(invalid_reason))
-        wrong_reason_for_state["vendors"]["claude"]["reason_id"] = "claude_not_installed"
+        wrong_reason_for_state["vendors"]["codex"]["reason_id"] = "codex_not_installed"
 
         ordinary_unready = json.loads(doctor_json(codex_ready=False))
         interrupted_with_wrong_exit = json.loads(doctor_json())
         interrupted_with_wrong_exit["ready"] = False
         interrupted_with_wrong_exit["reason_id"] = "requirement_not_met"
-        interrupted_with_wrong_exit["vendors"]["claude"] = {
+        interrupted_with_wrong_exit["vendors"]["codex"] = {
             "installed": True,
             "authenticated": False,
             "ready": False,
-            "reason_id": "claude_auth_interrupted",
+            "reason_id": "codex_auth_interrupted",
         }
 
         duplicate_key = doctor_json().replace(
@@ -893,15 +895,15 @@ class FlowTestCase(unittest.TestCase):
                 self.assertEqual(state["reason_id"], "preflight_doctor_malformed")
                 self.assertEqual(
                     self.fake_doctor_calls(),
-                    [{"stage": "doctor", "requirement": "both"}],
+                    [{"stage": "doctor", "requirement": "codex"}],
                 )
                 self.assertEqual(self.fake_calls(), [])
 
     def test_doctor_timeout_is_unavailable_before_worktree_creation(self):
-        # The outer flow budgets (2 * doctor_timeout) + DOCTOR_GRACE_SECONDS
-        # for the runner doctor to answer -- 10.2s when doctor_timeout=0.1,
-        # since DOCTOR_GRACE_SECONDS bounds two sequential vendor cleanups
-        # (4s each) plus a 2s scheduling margin. The fake doctor must hang
+        # The outer flow budgets doctor_timeout + DOCTOR_GRACE_SECONDS for the
+        # runner doctor to answer -- 6.1s when doctor_timeout=0.1, since the
+        # grace covers one bounded Codex cleanup plus scheduling margin. The
+        # fake doctor must hang
         # well past that budget so the outer flow deterministically kills it
         # and reports a timeout, rather than racing a fixed sleep against a
         # moving deadline. The outer flow forcibly kills the hung process at
@@ -918,7 +920,7 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(self.state_documents()[0]["reason_id"], "preflight_doctor_timeout")
         self.assertEqual(
             self.fake_doctor_calls(),
-            [{"stage": "doctor", "requirement": "both"}],
+            [{"stage": "doctor", "requirement": "codex"}],
         )
         self.assertEqual(self.fake_calls(), [])
 
@@ -997,10 +999,8 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         classify = self.stages("classify")[0]
         argv = classify["argv"]
-        if classify["vendor"] == "claude":
-            self.assertIn("--safe-mode", argv)
-        else:
-            self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+        self.assertEqual(classify["vendor"], "codex")
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
         self.assertIn("--json", argv)
 
     def test_classifier_write_violation_is_detected_before_worktree_creation(self):
@@ -1092,28 +1092,24 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(self.stages("repair"), [])
         self.assertEqual(len(self.stages("review")), 1)
 
-    def test_reviewer_is_opposite_of_the_vendor_that_actually_succeeded(self):
-        # Claude fails, Codex implements, so the reviewer must be Claude.
-        self.write_plan({
-            "implement": {
-                "claude": {"exit": 4, "stdout": "TypeError: could not finish"},
-                "codex": {"touch": ["implemented.txt"]},
-            },
-            "review": {"*": {"stdout": PASS_REVIEW}},
-        })
-        result = self.run_flow("--lane", "normal", "add a feature")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([c["vendor"] for c in self.stages("implement")], ["claude", "codex"])
-        self.assertEqual([c["vendor"] for c in self.stages("review")], ["claude"])
-        document = self.state_documents()[0]
-        self.assertEqual(document["implementation_vendor"], "codex")
-        self.assertEqual(document["reviewer_vendor"], "claude")
-
-    def test_reviewer_is_opposite_when_the_primary_vendor_succeeds(self):
+    def test_reviewer_is_a_fresh_codex_process_after_implementation(self):
         self.passing_plan()
         result = self.run_flow("--lane", "normal", "add a feature")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([c["vendor"] for c in self.stages("implement")], ["claude"])
+        implementation = self.stages("implement")
+        review = self.stages("review")
+        self.assertEqual([c["vendor"] for c in implementation], ["codex"])
+        self.assertEqual([c["vendor"] for c in review], ["codex"])
+        self.assertNotEqual(implementation[0]["pid"], review[0]["pid"])
+        document = self.state_documents()[0]
+        self.assertEqual(document["implementation_vendor"], "codex")
+        self.assertEqual(document["reviewer_vendor"], "codex")
+
+    def test_implementation_and_review_each_use_one_codex_attempt(self):
+        self.passing_plan()
+        result = self.run_flow("--lane", "normal", "add a feature")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c["vendor"] for c in self.stages("implement")], ["codex"])
         self.assertEqual([c["vendor"] for c in self.stages("review")], ["codex"])
 
     def test_review_stage_is_read_only_and_single_attempt(self):
@@ -1150,8 +1146,8 @@ class FlowTestCase(unittest.TestCase):
 
         implement = self.stages("implement")[0]
         review = self.stages("review")[0]
-        self.assertEqual(implement["argv"][implement["argv"].index("--model") + 1], "sonnet")
-        self.assertEqual(implement["argv"][implement["argv"].index("--effort") + 1], "low")
+        self.assertEqual(implement["argv"][implement["argv"].index("-m") + 1], "gpt-5.6-luna")
+        self.assertIn('model_reasoning_effort="low"', implement["argv"])
         self.assertEqual(review["argv"][review["argv"].index("-m") + 1], "gpt-5.6-terra")
         self.assertIn('model_reasoning_effort="medium"', review["argv"])
         review_stage = next(
@@ -1172,8 +1168,8 @@ class FlowTestCase(unittest.TestCase):
 
         repair = self.stages("repair")[0]
         review_2 = self.stages("review-2")[0]
-        self.assertEqual(repair["argv"][repair["argv"].index("--model") + 1], "sonnet")
-        self.assertEqual(repair["argv"][repair["argv"].index("--effort") + 1], "low")
+        self.assertEqual(repair["argv"][repair["argv"].index("-m") + 1], "gpt-5.6-luna")
+        self.assertIn('model_reasoning_effort="low"', repair["argv"])
         self.assertEqual(review_2["argv"][review_2["argv"].index("-m") + 1], "gpt-5.6-terra")
         self.assertIn('model_reasoning_effort="medium"', review_2["argv"])
 
@@ -1188,6 +1184,16 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.stages("repair")), 1)
         self.assertEqual(len(self.stages("review-2")), 1)
+        serial_calls = [
+            call for call in self.calls()
+            if call["stage"] in ("implement", "review", "repair", "review-2")
+        ]
+        self.assertEqual(
+            [call["stage"] for call in serial_calls],
+            ["implement", "review", "repair", "review-2"],
+        )
+        self.assertEqual(len({call["pid"] for call in serial_calls}), 4)
+        self.assertTrue(all(call["vendor"] == "codex" for call in serial_calls))
         worktree = self.worktrees / self.worktree_dirs()[0]
         self.assertTrue((worktree / "repaired.txt").exists())
         document = self.state_documents()[0]
@@ -1196,9 +1202,9 @@ class FlowTestCase(unittest.TestCase):
     def test_full_repair_flow_has_unique_monotonic_runner_stage_indices(self):
         self.write_plan({
             "classify": {"stdout": classify_block("normal"), "vendor": "codex"},
-            "implement": {"stdout": "implemented", "vendor": "claude"},
+            "implement": {"stdout": "implemented", "vendor": "codex"},
             "review": {"stdout": FAIL_REVIEW, "vendor": "codex"},
-            "repair": {"stdout": "repaired", "vendor": "claude"},
+            "repair": {"stdout": "repaired", "vendor": "codex"},
             "review-2": {"stdout": PASS_REVIEW, "vendor": "codex"},
             "final-gates": {"stdout": "gates ok"},
         })
@@ -1511,25 +1517,25 @@ class FlowTestCase(unittest.TestCase):
         # The nested attempt created no second branch or worktree.
         self.assertEqual(len(self.worktree_dirs()), 1)
 
-    def test_unavailable_vendors_propagate_75_without_retry_storm(self):
+    def test_unavailable_codex_propagates_75_without_retry_storm(self):
         self.write_plan({"implement": {"*": {
             "exit": 9, "stdout": "usage limit reached: subscription exhausted",
         }}})
         result = self.run_flow("--lane", "frontier", "add a feature")
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertEqual(self.stages("review"), [])
-        # Quota blocks each vendor after its first failure: one attempt each.
-        self.assertEqual(len(self.stages("implement")), 2)
+        # Quota blocks Codex after its first failure; stronger lanes are skipped.
+        self.assertEqual(len(self.stages("implement")), 1)
 
-    def test_missing_vendor_is_preflight_unavailable_before_worktree(self):
+    def test_missing_codex_is_preflight_unavailable_before_worktree(self):
         env = self.env.copy()
-        env["HERMES_CODER_CLAUDE"] = str(self.base / "missing-model-binary")
+        env["HERMES_CODER_CODEX"] = str(self.base / "missing-model-binary")
         self.passing_plan()
         result = self.run_flow("--lane", "normal", "add a feature", env=env)
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertEqual(self.calls(), [])
         self.assertEqual(len(self.worktree_dirs()), 0)
-        self.assertEqual(self.state_documents()[0]["reason_id"], "preflight_vendors_unavailable")
+        self.assertEqual(self.state_documents()[0]["reason_id"], "preflight_codex_unavailable")
 
     def test_missing_runner_is_a_harness_error_before_anything_is_created(self):
         result = self.run_flow("--runner", str(self.base / "no-such-runner"), "add a feature")
@@ -1558,15 +1564,21 @@ class FlowTestCase(unittest.TestCase):
 
     def test_stage_wall_clock_budget_terminates_a_stuck_runner(self):
         self.write_plan({"implement": {"sleep": 30}})
+        started = time.monotonic()
         result = self.run_flow(
             "--runner", str(self.fake_runner), "--lane", "normal",
             "--stage-timeout", "0.1", "--wall-timeout", "10", "add a feature",
             timeout=15,
         )
         self.assertEqual(result.returncode, 124, result.stderr)
-        self.assertIn("stage implement failed with status timeout", result.stderr)
-        self.assertEqual(len(self.fake_calls()), 1)
-        self.assertEqual(len(self.worktree_dirs()), 1)
+        self.assertLess(time.monotonic() - started, 15.0)
+        calls = self.fake_calls()
+        self.assertLessEqual(len(calls), 1)
+        if calls:
+            self.assertIn("stage implement failed with status timeout", result.stderr)
+            self.assertEqual(len(self.worktree_dirs()), 1)
+        else:
+            self.assertIn("wall-clock budget", result.stderr)
 
     # -- dry run, journal, and state -------------------------------------
 
@@ -1609,6 +1621,86 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(self.state_documents(), [])
         self.assertFalse(self.journal.exists())
 
+    @unittest.skipUnless(os.name == "posix", "FIFO containment requires POSIX")
+    def test_fifo_prompt_file_is_rejected_without_blocking(self):
+        prompt_file = self.base / "prompt.fifo"
+        os.mkfifo(str(prompt_file))
+        started = time.monotonic()
+        result = self.run_flow(
+            "--prompt-file",
+            str(prompt_file),
+            "--no-gates",
+            "--lane",
+            "normal",
+            timeout=5,
+        )
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("stable regular file", result.stderr)
+        self.assertEqual(self.worktree_dirs(), [])
+        self.assertEqual(self.flow_branches(), [])
+
+    def test_expired_deadline_with_prompt_file_returns_timeout(self):
+        prompt_file = self.base / "prompt.txt"
+        prompt_file.write_text("task", encoding="utf-8")
+        result = self.run_flow(
+            "--prompt-file",
+            str(prompt_file),
+            "--no-gates",
+            "--wall-timeout",
+            "0.000001",
+            "--lane",
+            "normal",
+        )
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("wall-clock budget", result.stderr)
+        self.assertEqual(self.worktree_dirs(), [])
+        self.assertEqual(self.flow_branches(), [])
+
+    @unittest.skipUnless(os.name == "posix", "FIFO containment requires POSIX")
+    def test_fifo_gate_file_is_rejected_without_blocking(self):
+        gate_file = self.base / "gates.fifo"
+        os.mkfifo(str(gate_file))
+        started = time.monotonic()
+        result = self.run_flow(
+            "--gate-file",
+            str(gate_file),
+            "--dry-run",
+            "--lane",
+            "normal",
+            "task",
+            timeout=15,
+        )
+        self.assertLess(time.monotonic() - started, 10.0)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("stable regular file", result.stderr)
+        self.assertEqual(self.worktree_dirs(), [])
+        self.assertEqual(self.flow_branches(), [])
+
+    def test_expired_deadline_with_gate_file_returns_timeout(self):
+        gate_file = self.base / "gates.json"
+        gate_file.write_text(
+            json.dumps({
+                "version": 1,
+                "gates": [{"name": "check", "argv": [str(self.gate_binary)]}],
+            }),
+            encoding="utf-8",
+        )
+        result = self.run_flow(
+            "--gate-file",
+            str(gate_file),
+            "--dry-run",
+            "--wall-timeout",
+            "0.000001",
+            "--lane",
+            "normal",
+            "task",
+        )
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("wall-clock budget", result.stderr)
+        self.assertEqual(self.worktree_dirs(), [])
+        self.assertEqual(self.flow_branches(), [])
+
     def test_flow_owned_paths_inside_source_are_refused_without_mutation(self):
         unsafe_state = self.source / ".flow-state"
         result = self.run_flow(
@@ -1621,7 +1713,7 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(self.worktree_dirs(), [])
 
     def test_journal_and_state_hold_no_prompt_or_model_text(self):
-        prompt_marker = "PROMPT_MARKER_c41f9 add a feature"
+        prompt_canary = "PROMPT_CANARY_c41f9 add a feature"
         review_secret = "REVIEW_SUMMARY_SECRET_9ab21"
         self.write_plan({
             "implement": {"*": {"touch": ["implemented.txt"], "stdout": "MODEL_OUTPUT_SECRET_77c30"}},
@@ -1629,7 +1721,7 @@ class FlowTestCase(unittest.TestCase):
         })
         env = self.env.copy()
         env["ENV_SECRET_MARKER"] = "ENV_SECRET_5d1e2"
-        result = self.run_flow("--lane", "normal", prompt_marker, env=env)
+        result = self.run_flow("--lane", "normal", prompt_canary, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
 
         journal_text = self.journal.read_text(encoding="utf-8")
@@ -1641,11 +1733,11 @@ class FlowTestCase(unittest.TestCase):
             path.read_text(encoding="utf-8") for path in state_text
         )
         for blob in (journal_text, state_blob):
-            self.assertNotIn("PROMPT_MARKER_c41f9", blob)
+            self.assertNotIn("PROMPT_CANARY_c41f9", blob)
             self.assertNotIn("MODEL_OUTPUT_SECRET_77c30", blob)
             self.assertNotIn(review_secret, blob)
             self.assertNotIn("ENV_SECRET_5d1e2", blob)
-            self.assertNotIn(str(self.claude), blob)
+            self.assertNotIn(str(self.codex), blob)
             self.assertNotIn(str(self.gate_binary), blob)
 
         self.assertEqual(stat.S_IMODE(self.journal.stat().st_mode), 0o600)
@@ -1687,7 +1779,7 @@ class FlowTestCase(unittest.TestCase):
             "duration_seconds", "started_at", "ended_at", "git_head_before", "git_head_after",
             "worktree_digest_before", "worktree_digest_after", "snapshot_status",
             "snapshot_reason_id", "preflight_requirement",
-            "preflight_status", "preflight_reason_id", "claude_ready", "codex_ready",
+            "preflight_status", "preflight_reason_id", "codex_ready",
             "branch", "worktree", "start_sha", "verdict", "severity",
             "findings_count", "gates_mode", "gates_count", "repair_passes_allowed",
             "repair_passes_used", "model_stages_run", "final_exit_code", "preserved",
@@ -1718,7 +1810,7 @@ class FlowTestCase(unittest.TestCase):
             "branch", "worktree", "gates_mode", "gates_source", "gates_count",
             "repair_passes_allowed", "repair_passes_used", "implementation_vendor",
             "reviewer_vendor", "model_stages_run", "preflight_requirement", "preflight_status",
-            "preflight_reason_id", "preflight_duration_seconds", "claude_ready", "codex_ready",
+            "preflight_reason_id", "preflight_duration_seconds", "codex_ready",
             "stages", "final_exit_code", "preserved",
         }
         self.assertTrue(set(document) <= allowed, set(document) - allowed)
@@ -1735,8 +1827,8 @@ class FlowTestCase(unittest.TestCase):
         self.assertEqual(stage_names, ["implement", "review", "review:verdict", "final-gates"])
         implementation = document["stages"][0]
         self.assertEqual(implementation["lane_requested"], "complex")
-        self.assertEqual(implementation["vendor_requested"], "claude")
-        self.assertEqual(implementation["vendor"], "claude")
+        self.assertEqual(implementation["vendor_requested"], "codex")
+        self.assertEqual(implementation["vendor"], "codex")
         self.assertEqual(implementation["git_head_before"], self.head_sha())
         self.assertEqual(implementation["git_head_after"], self.head_sha())
         self.assertEqual(implementation["snapshot_status"], "complete")
@@ -1791,7 +1883,7 @@ class FlowTestCase(unittest.TestCase):
     def test_fake_runner_receives_the_expected_stage_arguments(self):
         self.write_plan({
             "classify": {"stdout": classify_block("complex"), "vendor": "codex"},
-            "implement": {"stdout": "implemented", "vendor": "claude"},
+            "implement": {"stdout": "implemented", "vendor": "codex"},
             "review": {"stdout": PASS_REVIEW, "vendor": "codex"},
             "final-gates": {"stdout": "gates ok"},
         })
@@ -1818,9 +1910,9 @@ class FlowTestCase(unittest.TestCase):
     def test_final_output_flag_is_confined_to_classifier_and_both_reviews(self):
         self.write_plan({
             "classify": {"stdout": classify_block("normal"), "vendor": "codex"},
-            "implement": {"stdout": "implemented", "vendor": "claude"},
+            "implement": {"stdout": "implemented", "vendor": "codex"},
             "review": {"stdout": LOW_FAIL_REVIEW, "vendor": "codex"},
-            "repair": {"stdout": "repaired", "vendor": "claude"},
+            "repair": {"stdout": "repaired", "vendor": "codex"},
             "review-2": {"stdout": PASS_REVIEW, "vendor": "codex"},
             "final-gates": {"stdout": "gates ok"},
         })
@@ -1837,7 +1929,7 @@ class FlowTestCase(unittest.TestCase):
 
     def test_mixed_fake_runner_output_does_not_gain_raw_json_acceptance(self):
         self.write_plan({
-            "implement": {"stdout": "implemented", "vendor": "claude"},
+            "implement": {"stdout": "implemented", "vendor": "codex"},
             "review": {
                 "stdout": "tool output before result\n" + review_json("pass"),
                 "vendor": "codex",
@@ -1856,18 +1948,18 @@ class FlowTestCase(unittest.TestCase):
         })
         result = self.run_flow("--runner", str(self.fake_runner), "--lane", "normal", "add a feature")
         self.assertEqual(result.returncode, 70, result.stderr)
-        self.assertIn("determine the implementation vendor", result.stderr)
-        self.assertEqual(self.state_documents()[0]["reason_id"], "vendor_undetermined")
+        self.assertIn("secure runner attestation", result.stderr)
+        self.assertEqual(self.state_documents()[0]["reason_id"], "stage_wrong_provider")
 
     def test_undeterminable_reviewer_vendor_fails_closed(self):
         self.write_plan({
-            "implement": {"stdout": "implemented", "vendor": "claude"},
+            "implement": {"stdout": "implemented", "vendor": "codex"},
             "review": {"stdout": PASS_REVIEW, "journal": False},
         })
         result = self.run_flow("--runner", str(self.fake_runner), "--lane", "normal", "add a feature")
         self.assertEqual(result.returncode, 67, result.stderr)
         self.assertIn("undetermined vendor", result.stderr)
-        self.assertEqual(self.state_documents()[0]["reason_id"], "review_wrong_vendor")
+        self.assertEqual(self.state_documents()[0]["reason_id"], "review_wrong_provider")
 
     def test_frozen_gate_file_path_is_outside_the_worktree(self):
         self.write_plan({

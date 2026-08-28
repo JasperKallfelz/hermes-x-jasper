@@ -1,4 +1,4 @@
-.PHONY: help setup dry-run test audit gitleaks verify merge clean
+.PHONY: help setup dry-run test test-pi-module audit gitleaks install-gitleaks release-audit verify merge clean
 
 HERMES_HOME ?= $(HOME)/.hermes
 PYTHON      ?= python3
@@ -16,11 +16,20 @@ test: ## Run the test suite
 	$(PYTHON) -m pytest tests second-brain/tests -q
 	cd coder-stack && PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache $(PYTHON) -m unittest discover -s tests -q
 
+test-pi-module: ## Run public Pi module contract tests (no Docker/network/auth)
+	$(PYTHON) -m pytest tests/test_pi_runtime_module.py -q
+
 audit: ## Scan this repo for secrets, PII and local paths
-	$(PYTHON) scripts/audit_public.py .
+	$(PYTHON) scripts/audit_public.py . --history
+
+install-gitleaks: ## Install/verify checksum-pinned Gitleaks in .tools
+	./scripts/install_gitleaks.sh
 
 gitleaks: ## Run the deterministic gitleaks gate (current tree + full history)
 	./scripts/gitleaks_scan.sh
+
+release-audit: ## Authoritative fail-closed release and artifact audit
+	./scripts/release_audit.sh
 
 verify: ## Everything: shell syntax, python, tests, audit, patch check
 	./verify.sh

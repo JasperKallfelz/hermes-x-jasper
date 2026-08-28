@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a coding CLI with bounded, classified cross-vendor fallback.
+"""Run the Codex CLI with bounded, classified lane escalation.
 
 The public lane, task, alias, primary-selection, and dry-run behavior predates
 the reliability layer in this file and remains intentionally stable.
@@ -18,6 +18,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -35,31 +36,121 @@ except ImportError:  # pragma: no cover - Windows has no fcntl.
     fcntl = None  # type: ignore
 
 
-CLAUDE_WRAPPER = os.environ.get(
-    "HERMES_CODER_CLAUDE", os.path.expanduser("~/.local/bin/claude-subscription")
+UNSAFE_OVERRIDE_ENV = "HERMES_UNSAFE_EXECUTABLE_OVERRIDES"
+_CODEX_OVERRIDE = os.environ.get("HERMES_CODER_CODEX")
+CODEX_CLI = _CODEX_OVERRIDE or shutil.which("codex") or "codex"
+CODEX_VERSION_RE = re.compile(
+    rb"(?im)^\s*(?:codex|codex-cli)\s+v?[0-9]+(?:\.[0-9A-Za-z_-]+)+\s*$"
 )
-CODEX_CLI = os.environ.get("HERMES_CODER_CODEX", shutil.which("codex") or "codex")
+CODEX_LOGIN_READY_RE = re.compile(rb"(?i)\b(?:authenticated|logged\s+in)\b")
+CODEX_LOGIN_NEGATIVE_RE = re.compile(rb"(?i)\bnot\s+(?:authenticated|logged\s+in)\b")
 
-# lane -> engine -> (model, effort)
+
+CODEX_HOME_POINTER_LIMIT = 4096
+
+
+def _owned_private_regular(info: os.stat_result) -> bool:
+    owner_ok = not hasattr(os, "geteuid") or info.st_uid == os.geteuid()
+    return stat.S_ISREG(info.st_mode) and owner_ok and not (info.st_mode & 0o077)
+
+
+def _secure_pointer_text(path: Path) -> Optional[str]:
+    """Read one private pointer without following or blocking on special files."""
+    try:
+        before = os.lstat(path)
+        if not _owned_private_regular(before) or before.st_size > CODEX_HOME_POINTER_LIMIT:
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        try:
+            after = os.fstat(fd)
+            if (
+                not _owned_private_regular(after)
+                or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            ):
+                return None
+            payload = os.read(fd, CODEX_HOME_POINTER_LIMIT + 1)
+            if len(payload) > CODEX_HOME_POINTER_LIMIT:
+                return None
+        finally:
+            os.close(fd)
+        return payload.decode("utf-8").strip()
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _safe_codex_home(raw: str, home: Path) -> Optional[Path]:
+    if not raw or not os.path.isabs(raw):
+        return None
+    try:
+        candidate = Path(raw).resolve(strict=True)
+        candidate.relative_to(home)
+        directory_info = candidate.stat()
+        if (
+            not stat.S_ISDIR(directory_info.st_mode)
+            or (hasattr(os, "geteuid") and directory_info.st_uid != os.geteuid())
+            or directory_info.st_mode & 0o077
+        ):
+            return None
+        auth_path = candidate / "auth.json"
+        auth_before = os.lstat(auth_path)
+        if not _owned_private_regular(auth_before):
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(auth_path, flags)
+        try:
+            auth_after = os.fstat(fd)
+            if (
+                not _owned_private_regular(auth_after)
+                or (auth_before.st_dev, auth_before.st_ino)
+                != (auth_after.st_dev, auth_after.st_ino)
+            ):
+                return None
+        finally:
+            os.close(fd)
+        return candidate
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def configure_active_codex_home() -> None:
+    """Resolve CODEX_HOME once from a private absolute pointer."""
+    try:
+        home = Path.home().resolve(strict=True)
+    except (OSError, RuntimeError):
+        os.environ.pop("CODEX_HOME", None)
+        return
+    configured = os.environ.get("CODEX_HOME")
+    if configured is None:
+        configured = _secure_pointer_text(home / ".codex-active-home")
+    candidate = _safe_codex_home(configured or "", home)
+    if candidate is None:
+        os.environ.pop("CODEX_HOME", None)
+        return
+    os.environ["CODEX_HOME"] = str(candidate)
+
+
+configure_active_codex_home()
+
+# lane -> provider -> (model, effort)
 LANES = {
     "fast": {
-        "claude": ("sonnet", "low"),
         "codex": ("gpt-5.6-luna", "low"),
     },
     "normal": {
-        "claude": ("sonnet", "high"),
         "codex": ("gpt-5.6-terra", "medium"),
     },
     "complex": {
-        "claude": ("opus", "xhigh"),
         "codex": ("gpt-5.6-sol", "high"),
     },
     "frontier": {
-        "claude": ("fable", "high"),
         "codex": ("gpt-5.6-sol", "max"),
     },
     "security": {
-        "claude": ("opus", "xhigh"),
         "codex": ("gpt-5.6-sol", "max"),
     },
 }
@@ -128,6 +219,24 @@ GIT_CONTROL_ENV = (
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
 )
+GIT_HARDENED_CONFIG = (
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.attributesFile=/dev/null",
+    "-c", "credential.helper=",
+    "-c", "credential.interactive=never",
+    "-c", "core.askPass=",
+    "-c", "core.editor=:",
+    "-c", "sequence.editor=:",
+    "-c", "core.pager=cat",
+    "-c", "pager.status=false",
+    "-c", "pager.diff=false",
+    "-c", "diff.external=",
+    "-c", "diff.trustExitCode=false",
+)
+GIT_SNAPSHOT_OUTPUT_LIMIT = 64 * 1024 * 1024
+GIT_FILTER_OUTPUT_LIMIT = 1024 * 1024
+_TRUSTED_GIT = None  # type: Optional[str]
 PRIVATE_CHILD_ENV = (
     "HERMES_CODER_LOG",
     "HERMES_CODER_STATE",
@@ -137,7 +246,85 @@ PRIVATE_CHILD_ENV = (
     "HERMES_FLOW_LOG",
     "HERMES_FLOW_STATE_DIR",
     "HERMES_FLOW_WORKTREE_ROOT",
+    UNSAFE_OVERRIDE_ENV,
+    "HERMES_TEST_CODEX_IDENTITY",
 )
+PROCESS_LAUNCH_GRACE_SECONDS = 5.0
+PROCESS_CLEANUP_RESERVE_SECONDS = 1.0
+PROCESS_MIN_LAUNCH_SECONDS = 0.05
+PROCESS_IDENTITY_RETRY_SECONDS = 0.1
+PROCESS_LAUNCH_READY = b"R"
+PROCESS_LAUNCH_ACK = b"G"
+PROCESS_CLEANUP_ACK = b"C"
+# A POSIX target cannot safely own its own process group: its stable PID
+# identity disappears when it exits even if descendants keep the PGID alive.
+# This supervisor remains the group leader through fail-closed cleanup.
+POSIX_PROCESS_SUPERVISOR_SOURCE = r'''import errno,os,select,signal,sys,time
+FAIL=70
+READY=b"R"
+ACK=b"G"
+CLEAN=b"C"
+def clock():
+ return time.clock_gettime(time.CLOCK_MONOTONIC)
+def send(fd,payload,timeout):
+ try:
+  if timeout>0 and select.select([],[fd],[],timeout)[1]: return os.write(fd,payload)==len(payload)
+ except OSError: pass
+ return False
+def stop_group():
+ try: os.killpg(os.getpgrp(),signal.SIGKILL)
+ except OSError: pass
+ os._exit(FAIL)
+def main(a):
+ if os.name!="posix" or len(a)<5: return FAIL
+ try: control=int(a[0],10); status_fd=int(a[1],10); launch_deadline=float(a[2]); hard_deadline=float(a[3]); remaining=launch_deadline-clock()
+ except (AttributeError,TypeError,ValueError,OverflowError,OSError): return FAIL
+ command=a[4:]
+ if control<=2 or status_fd<=2 or control==status_fd or not command or launch_deadline!=launch_deadline or hard_deadline!=hard_deadline or hard_deadline<launch_deadline or remaining<=0 or remaining>10.0: return FAIL
+ try:
+  if os.getsid(0)!=os.getpid() or os.getpgrp()!=os.getpid(): return FAIL
+  os.set_inheritable(control,False); os.set_inheritable(status_fd,False)
+  for sig in (signal.SIGHUP,signal.SIGINT,signal.SIGTERM): signal.signal(sig,signal.SIG_IGN)
+  remaining=launch_deadline-clock()
+  if remaining<=0 or not send(status_fd,READY,remaining): return FAIL
+  remaining=launch_deadline-clock()
+  if remaining<=0 or not select.select([control],[],[],remaining)[0]: return FAIL
+  if os.read(control,2)!=ACK: return FAIL
+  child=os.fork()
+  if child==0:
+   try:
+    os.close(control)
+    for sig in (signal.SIGHUP,signal.SIGINT,signal.SIGTERM): signal.signal(sig,signal.SIG_DFL)
+    os.execvpe(command[0],command,os.environ)
+   except OSError as error:
+    send(status_fd,b"E %d\n"%(error.errno or errno.EIO),1.0)
+    os._exit(127 if error.errno==errno.ENOENT else 126)
+  while True:
+   try: waited,child_status=os.waitpid(child,os.WNOHANG)
+   except InterruptedError: waited=0
+   except ChildProcessError: stop_group()
+   if waited==child:
+    if os.WIFEXITED(child_status): rc=os.WEXITSTATUS(child_status)
+    elif os.WIFSIGNALED(child_status): rc=-os.WTERMSIG(child_status)
+    else: stop_group()
+    if not send(status_fd,b"D %d\n"%rc,max(0.0,hard_deadline-clock())): stop_group()
+    break
+   try:
+    readable=select.select([control],[],[],0.01)[0]
+    if readable:
+     os.read(control,2)
+     stop_group()
+   except OSError: stop_group()
+  while True:
+   try:
+    remaining=hard_deadline-clock()
+    if remaining<=0 or not select.select([control],[],[],remaining)[0]: stop_group()
+    if os.read(control,2)==CLEAN: stop_group()
+    stop_group()
+   except OSError: stop_group()
+ except OSError: stop_group()
+if __name__=="__main__": raise SystemExit(main(sys.argv[1:]))
+'''
 JOURNAL_FIELDS = {
     "event",
     "run_id",
@@ -168,7 +355,7 @@ FAILURE_PATTERNS = (
         "quota_usage_limit",
         re.compile(
             r"\b(?:usage[_-]limit[_-](?:reached|exceeded)|"
-            r"(?:claude(?: code)?|anthropic|subscription|account|plan)[^\r\n]{0,64}"
+            r"(?:codex|openai|subscription|account|plan)[^\r\n]{0,64}"
             r"usage[ -]?limit[ -]?(?:reached|exceeded))\b",
             re.I,
         ),
@@ -190,7 +377,7 @@ FAILURE_PATTERNS = (
         "auth_login_required",
         re.compile(
             r"\b(?:invalid (?:api[ _-]?)?key|(?:api|access|refresh|oauth) token (?:has )?expired|"
-            r"(?:claude(?: code)?|codex|openai|anthropic)[^\r\n]{0,48}(?:login|sign[ -]?in) required)\b",
+            r"(?:codex|openai)[^\r\n]{0,48}(?:login|sign[ -]?in) required)\b",
             re.I,
         ),
     ),
@@ -219,6 +406,7 @@ class RunResult:
     final_output: Optional[bytes] = None
     final_output_error: Optional[str] = None
     cleanup_failed: bool = False
+    output_exceeded: bool = False
 
 
 @dataclass(frozen=True)
@@ -285,6 +473,30 @@ class TailBuffer:
     def value(self) -> bytes:
         with self.lock:
             return b"".join(self.parts)
+
+
+class BoundedCapture:
+    """Retain a complete bounded stream and flag the first excess byte."""
+
+    def __init__(self, limit: int, overflow: threading.Event) -> None:
+        self.limit = limit
+        self.overflow = overflow
+        self.payload = bytearray()
+        self.lock = threading.Lock()
+
+    def append(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        with self.lock:
+            available = self.limit - len(self.payload)
+            if available > 0:
+                self.payload.extend(chunk[:available])
+            if len(chunk) > available:
+                self.overflow.set()
+
+    def value(self) -> bytes:
+        with self.lock:
+            return bytes(self.payload)
 
 
 class CodexFinalOutputParser:
@@ -377,52 +589,6 @@ class CodexFinalOutputParser:
         if self.final_output is None:
             return None, "final_output_missing"
         return self.final_output, None
-
-
-class ClaudeFinalOutputParser:
-    """Bound and validate Claude's single top-level result document."""
-
-    def __init__(self) -> None:
-        self.payload = bytearray()
-        self.error = None  # type: Optional[str]
-
-    def feed(self, chunk: bytes) -> None:
-        if not chunk or self.error is not None:
-            return
-        if len(self.payload) + len(chunk) > FINAL_NATIVE_STREAM_LIMIT:
-            self.payload.clear()
-            self.error = "final_output_oversized"
-            return
-        self.payload.extend(chunk)
-
-    def finish(self) -> Tuple[Optional[bytes], Optional[str]]:
-        if self.error is not None:
-            return None, self.error
-        if not self.payload:
-            return None, "final_output_missing"
-        try:
-            document = json.loads(
-                bytes(self.payload).decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-            )
-        except (UnicodeError, ValueError, RecursionError):
-            return None, "final_output_malformed"
-        if not isinstance(document, dict) or document.get("type") != "result":
-            return None, "final_output_malformed"
-        if document.get("subtype") != "success":
-            return None, "final_output_error"
-        if "is_error" in document and document["is_error"] is not False:
-            return None, "final_output_error"
-        result = document.get("result")
-        if not isinstance(result, str) or not result:
-            return None, "final_output_missing"
-        try:
-            encoded = result.encode("utf-8")
-        except UnicodeError:
-            return None, "final_output_malformed"
-        if len(encoded) > FINAL_OUTPUT_LIMIT:
-            return None, "final_output_oversized"
-        return encoded, None
 
 
 class StreamClassifier:
@@ -541,6 +707,37 @@ def process_identity(pid: int) -> Optional[str]:
             info.pbi_start_tvsec, info.pbi_start_tvusec
         )
     return None
+
+
+def process_identity_until(
+    pid: int, deadline: float
+) -> Tuple[Optional[str], bool]:
+    """Read a kernel identity without letting a stalled reader consume cleanup."""
+    result = []  # type: List[Optional[str]]
+    finished = threading.Event()
+
+    def read_identity() -> None:
+        try:
+            retry_deadline = min(
+                deadline, time.monotonic() + PROCESS_IDENTITY_RETRY_SECONDS
+            )
+            while True:
+                identity = process_identity(pid)
+                if identity is not None or time.monotonic() >= retry_deadline:
+                    result.append(identity)
+                    break
+                time.sleep(0.002)
+        finally:
+            finished.set()
+
+    reader = threading.Thread(
+        target=read_identity, name="hermes-process-identity", daemon=True
+    )
+    reader.start()
+    remaining = max(0.0, deadline - time.monotonic())
+    if not finished.wait(remaining):
+        return None, False
+    return (result[0] if result else None), True
 
 
 def encode_group_frame(kind: bytes, process_group: int, identity: str) -> bytes:
@@ -724,12 +921,11 @@ def build_escalation_chain(lane: str, no_escalate: bool) -> List[str]:
     return list(ESCALATION_ORDER[start:])
 
 
-def build_attempts(chain: List[str], primary: str, fallback: str) -> List[Tuple[str, str]]:
-    attempts = []  # type: List[Tuple[str, str]]
-    for lane in chain:
-        attempts.append((lane, primary))
-        attempts.append((lane, fallback))
-    return attempts
+def build_attempts(chain: List[str], primary: str) -> List[Tuple[str, str]]:
+    """Build one Codex attempt per lane; there is no provider fallback."""
+    if primary != "codex":
+        raise ValueError("Codex is the only supported provider")
+    return [(lane, "codex") for lane in chain]
 
 
 def build_command(
@@ -743,27 +939,8 @@ def build_command(
     final_output_only: bool = False,
 ) -> List[str]:
     read_only = task in READ_ONLY_TASKS
-    if engine == "claude":
-        permission_mode = "plan" if read_only else "acceptEdits"
-        cmd = [
-            CLAUDE_WRAPPER,
-            "--model",
-            model,
-            "--effort",
-            effort,
-            "--max-turns",
-            str(max_turns),
-            "--no-session-persistence",
-            "--permission-mode",
-            permission_mode,
-        ]
-        if read_only:
-            cmd.append("--safe-mode")
-        if final_output_only:
-            cmd += ["--output-format", "json"]
-        cmd += ["--print", "--", prompt]
-        return cmd
-
+    if engine != "codex":
+        raise ValueError("Codex is the only supported provider")
     sandbox = "read-only" if read_only else "workspace-write"
     cmd = [
         CODEX_CLI,
@@ -818,6 +995,51 @@ def gate_subprocess_environment() -> Dict[str, str]:
     return child_subprocess_environment()
 
 
+def git_subprocess_environment() -> Dict[str, str]:
+    """Return a minimal environment for non-interactive snapshot-only Git."""
+    allowed = {"HOME", "LANG", "LC_ALL", "LOGNAME", "SYSTEMROOT", "TMPDIR", "USER"}
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name in allowed or name.startswith("LC_")
+    }
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_PAGER": "cat",
+            "PAGER": "cat",
+            "GIT_EDITOR": ":",
+            "GIT_SEQUENCE_EDITOR": ":",
+            "GIT_ASKPASS": "",
+            "SSH_ASKPASS": "",
+        }
+    )
+    return environment
+
+
+def trusted_git_executable() -> str:
+    """Resolve Git once to an absolute regular executable for this invocation."""
+    global _TRUSTED_GIT
+    if _TRUSTED_GIT is not None:
+        return _TRUSTED_GIT
+    located = shutil.which("git")
+    if located is None or not os.path.isabs(located):
+        raise FileNotFoundError(errno.ENOENT, "git executable not found")
+    try:
+        resolved = Path(located).resolve(strict=True)
+        info = resolved.stat()
+    except (OSError, RuntimeError) as exc:
+        raise FileNotFoundError(errno.ENOENT, "git executable unavailable") from exc
+    if not stat.S_ISREG(info.st_mode) or not os.access(str(resolved), os.X_OK):
+        raise OSError(errno.EACCES, "git executable is unsafe")
+    _TRUSTED_GIT = str(resolved)
+    return _TRUSTED_GIT
+
+
 def _signal_process_group(
     process_group: int,
     proc: subprocess.Popen,
@@ -853,17 +1075,22 @@ def _process_group_exists(process_group: int, proc: subprocess.Popen) -> bool:
 
 
 def _wait_for_process_group(process_group: int, proc: subprocess.Popen, timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + max(0.0, timeout)
+    return _wait_for_process_group_until(process_group, proc, deadline)
+
+
+def _wait_for_process_group_until(
+    process_group: int, proc: subprocess.Popen, deadline: float
+) -> bool:
+    """Wait for an exact group without creating a second cleanup budget."""
     while _process_group_exists(process_group, proc):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
         try:
-            proc.wait(timeout=min(0.05, remaining))
+            proc.wait(timeout=min(0.01, remaining))
         except subprocess.TimeoutExpired:
             pass
-        if proc.poll() is not None:
-            time.sleep(min(0.05, max(0.0, remaining)))
     return True
 
 
@@ -871,19 +1098,29 @@ def _stop_process_group(
     proc: subprocess.Popen,
     first_signal: int,
     identity: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> bool:
+    if deadline is None:
+        deadline = time.monotonic() + 3.0
     process_group = proc.pid
     if not _process_group_exists(process_group, proc):
         return True
     if not _signal_process_group(process_group, proc, first_signal, identity):
         return not _process_group_exists(process_group, proc)
-    stopped = _wait_for_process_group(process_group, proc, 1.0)
+    remaining = max(0.0, deadline - time.monotonic())
+    first_wait = min(0.25, remaining / 2.0)
+    stopped = _wait_for_process_group_until(
+        process_group, proc, time.monotonic() + first_wait
+    )
     if not stopped and first_signal != signal.SIGTERM:
         if not _signal_process_group(
             process_group, proc, signal.SIGTERM, identity
         ):
             return not _process_group_exists(process_group, proc)
-        stopped = _wait_for_process_group(process_group, proc, 1.0)
+        remaining = max(0.0, deadline - time.monotonic())
+        stopped = _wait_for_process_group_until(
+            process_group, proc, time.monotonic() + min(0.25, remaining / 2.0)
+        )
     # Waiting for only the group leader is insufficient: it may exit while a
     # descendant that ignored TERM continues in the same group. Escalation is
     # allowed only while the recorded group owner still validates.
@@ -892,22 +1129,34 @@ def _stop_process_group(
             process_group, proc, signal.SIGKILL, identity
         ):
             return False
-        _wait_for_process_group(process_group, proc, 1.0)
+        _wait_for_process_group_until(process_group, proc, deadline)
     try:
-        proc.wait(timeout=1.0)
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         try:
             proc.kill()
         except OSError:
             pass
         try:
-            proc.wait(timeout=1.0)
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             pass
     return not _process_group_exists(process_group, proc)
 
 
-def _terminate_direct_child(proc: subprocess.Popen) -> None:
+def _reap_exited_leader(proc: subprocess.Popen, deadline: Optional[float] = None) -> None:
+    """Reap a direct child that exited on its own so an unreaped zombie
+    leader cannot masquerade as a live process group."""
+    try:
+        timeout = 1.0 if deadline is None else max(0.0, deadline - time.monotonic())
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _terminate_direct_child(
+    proc: subprocess.Popen, deadline: Optional[float] = None
+) -> None:
     """Synchronously stop/reap only a direct child whose group is unverified."""
     # Close captured streams before waiting so this exceptional path cannot
     # retain unbounded child output in communicate().
@@ -916,13 +1165,15 @@ def _terminate_direct_child(proc: subprocess.Popen) -> None:
             pipe.close()
         except (AttributeError, OSError):
             pass
+    if deadline is None:
+        deadline = time.monotonic() + 2.0
     if proc.poll() is None:
         try:
             proc.terminate()
         except OSError:
             pass
     try:
-        proc.wait(timeout=1.0)
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         if proc.poll() is None:
             try:
@@ -930,7 +1181,7 @@ def _terminate_direct_child(proc: subprocess.Popen) -> None:
             except OSError:
                 pass
         try:
-            proc.wait(timeout=1.0)
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except (OSError, subprocess.TimeoutExpired):
             pass
     except OSError:
@@ -939,16 +1190,31 @@ def _terminate_direct_child(proc: subprocess.Popen) -> None:
 
 def _resolve_health_executable(command: str) -> Optional[str]:
     """Resolve a configured CLI without exposing its path in doctor output."""
+    if _CODEX_OVERRIDE is not None:
+        if os.environ.get(UNSAFE_OVERRIDE_ENV) != "1":
+            return None
+        if not os.path.isabs(_CODEX_OVERRIDE):
+            return None
     if os.path.dirname(command):
-        candidate = Path(command).expanduser()
+        candidate = Path(command)
+        if not candidate.is_absolute():
+            return None
         try:
             resolved = candidate.resolve()
+            info = resolved.stat()
         except (OSError, RuntimeError):
             return None
-        if resolved.is_file() and os.access(str(resolved), os.X_OK):
+        if stat.S_ISREG(info.st_mode) and os.access(str(resolved), os.X_OK):
             return str(resolved)
         return None
-    return shutil.which(command)
+    located = shutil.which(command)
+    if located is None or not os.path.isabs(located):
+        return None
+    try:
+        info = os.stat(located)
+    except OSError:
+        return None
+    return located if stat.S_ISREG(info.st_mode) and os.access(located, os.X_OK) else None
 
 
 def _auth_health(
@@ -957,77 +1223,62 @@ def _auth_health(
     status_arguments: Sequence[str],
     timeout_seconds: float,
     shutdown: Optional[ShutdownHandoff],
+    absolute_deadline: Optional[float] = None,
 ) -> VendorHealth:
     executable = _resolve_health_executable(configured_command)
     if executable is None:
         return VendorHealth(False, False, False, "{}_not_installed".format(vendor))
     if shutdown is not None and shutdown.requested():
         return VendorHealth(True, False, False, "{}_auth_interrupted".format(vendor))
-    if os.name == "posix" and process_identity(os.getpid()) is None:
-        return VendorHealth(True, False, False, "{}_auth_launch_failed".format(vendor))
-
-    try:
-        proc = subprocess.Popen(
-            [executable] + list(status_arguments),
-            cwd=str(Path.cwd()),
-            env=child_subprocess_environment(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=(os.name == "posix"),
-        )
-    except OSError:
-        return VendorHealth(True, False, False, "{}_auth_launch_failed".format(vendor))
-
-    group_identity = process_identity(proc.pid) if os.name == "posix" else None
-    if os.name == "posix" and group_identity is None:
-        if shutdown is not None:
-            shutdown.registration_failed()
-        _terminate_direct_child(proc)
-        return VendorHealth(True, False, False, "{}_auth_launch_failed".format(vendor))
-    if shutdown is not None:
-        if group_identity is None:  # pragma: no cover - Windows fallback.
-            group_identity = "direct:{}".format(proc.pid)
-        if not shutdown.model_started(proc.pid, group_identity):
-            shutdown.registration_failed()
-
     deadline = time.monotonic() + timeout_seconds
-    timed_out = False
-    interrupted = False
-    cleanup_failed = False
-    while proc.poll() is None:
-        if shutdown is not None and shutdown.requested():
-            interrupted = True
-            cleanup_failed = not _stop_process_group(
-                proc, signal.SIGTERM, group_identity
-            )
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            cleanup_failed = not _stop_process_group(
-                proc, signal.SIGTERM, group_identity
-            )
-            break
-        try:
-            proc.wait(timeout=min(0.05, remaining))
-        except subprocess.TimeoutExpired:
-            pass
-    if _process_group_exists(proc.pid, proc):
-        cleanup_failed = not _stop_process_group(
-            proc, signal.SIGTERM, group_identity
-        ) or cleanup_failed
-    group_stopped = not _process_group_exists(proc.pid, proc)
-    if shutdown is not None and group_stopped and group_identity is not None:
-        shutdown.model_stopped(proc.pid, group_identity)
-    if interrupted:
-        return VendorHealth(True, False, False, "{}_auth_interrupted".format(vendor))
-    if timed_out:
+    if absolute_deadline is not None:
+        deadline = min(deadline, absolute_deadline)
+    if deadline <= time.monotonic():
         return VendorHealth(True, False, False, "{}_auth_timeout".format(vendor))
-    if cleanup_failed:
+    version = run_process(
+        [executable, "--version"],
+        Path.cwd(),
+        max(0.001, deadline - time.monotonic()),
+        shutdown=shutdown,
+        report_model_group=True,
+        environment=child_subprocess_environment(),
+        suppress_output=True,
+        absolute_deadline=deadline,
+    )
+    if version.interrupted:
+        return VendorHealth(True, False, False, "{}_auth_interrupted".format(vendor))
+    if version.timed_out or time.monotonic() >= deadline:
+        return VendorHealth(True, False, False, "{}_auth_timeout".format(vendor))
+    if version.exit_code != 0 or version.cleanup_failed:
+        return VendorHealth(True, False, False, "{}_identity_unverified".format(vendor))
+    version_output = version.stdout_tail + b"\n" + version.stderr_tail
+    if CODEX_VERSION_RE.search(version_output) is None:
+        return VendorHealth(True, False, False, "{}_identity_unverified".format(vendor))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return VendorHealth(True, False, False, "{}_auth_timeout".format(vendor))
+    result = run_process(
+        [executable] + list(status_arguments),
+        Path.cwd(),
+        remaining,
+        shutdown=shutdown,
+        report_model_group=True,
+        environment=child_subprocess_environment(),
+        suppress_output=True,
+        absolute_deadline=deadline,
+    )
+    if result.interrupted:
+        return VendorHealth(True, False, False, "{}_auth_interrupted".format(vendor))
+    if result.timed_out or time.monotonic() >= deadline:
+        return VendorHealth(True, False, False, "{}_auth_timeout".format(vendor))
+    if result.cleanup_failed:
         return VendorHealth(True, False, False, "{}_auth_unavailable".format(vendor))
-    rc = proc.returncode if proc.returncode is not None else 1
-    if rc == 0:
+    login_output = result.stdout_tail + b"\n" + result.stderr_tail
+    if (
+        result.exit_code == 0
+        and CODEX_LOGIN_READY_RE.search(login_output) is not None
+        and CODEX_LOGIN_NEGATIVE_RE.search(login_output) is None
+    ):
         return VendorHealth(True, True, True, "ready")
     return VendorHealth(True, False, False, "{}_auth_unavailable".format(vendor))
 
@@ -1036,18 +1287,20 @@ def run_doctor(
     requirement: str,
     timeout_seconds: float,
     shutdown: Optional[ShutdownHandoff],
+    absolute_deadline: Optional[float] = None,
 ) -> int:
-    """Check local subscription CLIs without invoking a model."""
+    """Check the local subscription-backed Codex CLI without invoking a model."""
     health = {
-        "claude": _auth_health(
-            "claude", CLAUDE_WRAPPER, ("auth", "status"), timeout_seconds, shutdown
-        ),
         "codex": _auth_health(
-            "codex", CODEX_CLI, ("login", "status"), timeout_seconds, shutdown
+            "codex",
+            CODEX_CLI,
+            ("login", "status"),
+            timeout_seconds,
+            shutdown,
+            absolute_deadline,
         ),
     }
-    ready_count = sum(1 for result in health.values() if result.ready)
-    ready = ready_count >= 1 if requirement == "any" else ready_count == len(health)
+    ready = health["codex"].ready
     interrupted = any(result.reason_id.endswith("_interrupted") for result in health.values())
     reason_id = "ready" if ready else "requirement_not_met"
     document = {
@@ -1072,7 +1325,78 @@ def run_doctor(
     print(json.dumps(document, sort_keys=True, separators=(",", ":")))
     if ready:
         return 0
+    if absolute_deadline is not None and time.monotonic() >= absolute_deadline:
+        return EXIT_TIMEOUT
     return EXIT_ABORT if interrupted else EXIT_UNAVAILABLE
+
+
+def verify_codex_identity(
+    timeout_seconds: float,
+    shutdown: Optional[ShutdownHandoff],
+    absolute_deadline: Optional[float] = None,
+) -> Tuple[Optional[str], str]:
+    """Bind model attribution to a real Codex version contract before launch."""
+    executable = _resolve_health_executable(CODEX_CLI)
+    if executable is None:
+        return None, "codex_executable_untrusted"
+    result = run_process(
+        [executable, "--version"],
+        Path.cwd(),
+        timeout_seconds,
+        shutdown=shutdown,
+        report_model_group=True,
+        environment=child_subprocess_environment(),
+        suppress_output=True,
+        absolute_deadline=absolute_deadline,
+    )
+    if result.interrupted:
+        return None, "codex_identity_interrupted"
+    if result.timed_out or (
+        absolute_deadline is not None and time.monotonic() >= absolute_deadline
+    ):
+        return None, "codex_identity_timeout"
+    output = result.stdout_tail + b"\n" + result.stderr_tail
+    if (
+        result.exit_code != 0
+        or result.cleanup_failed
+        or CODEX_VERSION_RE.search(output) is None
+    ):
+        return None, "codex_identity_unverified"
+    return executable, "ready"
+
+
+def _posix_process_clock() -> float:
+    """Read the monotonic clock shared with the POSIX supervisor process."""
+    if os.name != "posix":
+        raise OSError(errno.ENOSYS, "POSIX process clock is unavailable")
+    try:
+        value = time.clock_gettime(time.CLOCK_MONOTONIC)
+    except AttributeError:
+        raise OSError(errno.ENOSYS, "POSIX process clock is unavailable")
+    if not math.isfinite(value):
+        raise OSError(errno.EIO, "POSIX process clock returned an invalid value")
+    return value
+
+
+def _posix_process_supervisor_command(
+    control_fd: int,
+    status_fd: int,
+    launch_deadline: float,
+    hard_deadline: float,
+    command: Sequence[str],
+) -> List[str]:
+    return [
+        sys.executable,
+        "-I",
+        "-S",
+        "-B",
+        "-c",
+        POSIX_PROCESS_SUPERVISOR_SOURCE,
+        str(control_fd),
+        str(status_fd),
+        repr(launch_deadline),
+        repr(hard_deadline),
+    ] + list(command)
 
 
 def run_process(
@@ -1083,9 +1407,30 @@ def run_process(
     report_model_group: bool = False,
     environment: Optional[Dict[str, str]] = None,
     final_output_engine: Optional[str] = None,
+    suppress_output: bool = False,
+    absolute_deadline: Optional[float] = None,
+    capture_output_limit: Optional[int] = None,
 ) -> RunResult:
     """Run a child with live/default or isolated/native stdout handling."""
     started = time.monotonic()
+    deadline = started + timeout_seconds
+    if absolute_deadline is not None:
+        deadline = min(deadline, absolute_deadline)
+    effective_timeout = max(0.0, deadline - started)
+    if effective_timeout <= 0:
+        return RunResult(
+            exit_code=EXIT_TIMEOUT,
+            stdout_tail=b"",
+            stderr_tail=b"",
+            duration_seconds=0.0,
+            timed_out=True,
+            reason_id="wall_timeout",
+        )
+    cleanup_reserve = min(
+        PROCESS_CLEANUP_RESERVE_SECONDS,
+        max(0.02, effective_timeout / 2.0),
+    )
+    execution_deadline = max(started, deadline - cleanup_reserve)
     if shutdown is not None and shutdown.requested():
         return RunResult(
             exit_code=EXIT_ABORT,
@@ -1098,6 +1443,15 @@ def run_process(
     # POSIX group signalling is safe only when its owner can be bound to a
     # stable kernel identity. Check capability before creating any model/gate.
     if os.name == "posix" and process_identity(os.getpid()) is None:
+        if absolute_deadline is not None and time.monotonic() >= absolute_deadline:
+            return RunResult(
+                exit_code=EXIT_TIMEOUT,
+                stdout_tail=b"",
+                stderr_tail=b"",
+                duration_seconds=time.monotonic() - started,
+                timed_out=True,
+                reason_id="wall_timeout",
+            )
         return RunResult(
             exit_code=EXIT_HARNESS,
             stdout_tail=b"",
@@ -1106,17 +1460,81 @@ def run_process(
             launch_failed=True,
             reason_id="process_identity_unavailable",
         )
+    child_environment = (
+        environment if environment is not None else child_subprocess_environment()
+    )
+    control_read = None  # type: Optional[int]
+    control_write = None  # type: Optional[int]
+    status_read = None  # type: Optional[int]
+    status_write = None  # type: Optional[int]
+    launch_deadline = 0.0
+    launch_deadline_outer = 0.0
+    supervisor_hard_deadline = 0.0
+    if os.name == "posix":
+        try:
+            outer_now = time.monotonic()
+            process_now = _posix_process_clock()
+            launch_allowance = min(
+                PROCESS_LAUNCH_GRACE_SECONDS,
+                max(0.0, execution_deadline - outer_now),
+            )
+            launch_deadline_outer = outer_now + launch_allowance
+            launch_deadline = process_now + launch_allowance
+            supervisor_hard_deadline = process_now + max(0.0, deadline - outer_now)
+        except OSError:
+            return RunResult(
+                exit_code=EXIT_HARNESS,
+                stdout_tail=b"",
+                stderr_tail=b"",
+                duration_seconds=time.monotonic() - started,
+                launch_failed=True,
+                reason_id="process_supervisor_unavailable",
+            )
     try:
-        proc = subprocess.Popen(
-            list(cmd),
-            cwd=str(workdir),
-            env=environment if environment is not None else child_subprocess_environment(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=(os.name == "posix"),
-        )
+        if os.name == "posix":
+            control_read, control_write = os.pipe()
+            status_read, status_write = os.pipe()
+            proc = subprocess.Popen(
+                _posix_process_supervisor_command(
+                    control_read,
+                    status_write,
+                    launch_deadline,
+                    supervisor_hard_deadline,
+                    cmd,
+                ),
+                cwd=str(workdir),
+                env=child_environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                pass_fds=(control_read, status_write),
+            )
+            os.close(control_read)
+            control_read = None
+            os.close(status_write)
+            status_write = None
+        else:  # pragma: no cover - exercised only on Windows.
+            proc = subprocess.Popen(
+                list(cmd),
+                cwd=str(workdir),
+                env=child_environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=False,
+            )
     except OSError as exc:
+        for fd in (control_read, control_write, status_read, status_write):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        control_read = None
+        control_write = None
+        status_read = None
+        status_write = None
         return RunResult(
             exit_code=127 if exc.errno == errno.ENOENT else 126,
             stdout_tail=b"",
@@ -1126,14 +1544,42 @@ def run_process(
             launch_errno=exc.errno,
             reason_id="executable_missing" if exc.errno == errno.ENOENT else "launch_os_error",
         )
+    finally:
+        for fd in (control_read, status_write):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
-    group_identity = process_identity(proc.pid) if os.name == "posix" else None
+    identity_completed = True
+    if os.name == "posix":
+        group_identity, identity_completed = process_identity_until(
+            proc.pid, min(launch_deadline_outer, execution_deadline)
+        )
+    else:
+        group_identity = None
     if os.name == "posix" and group_identity is None:
-        # Never manufacture a POSIX identity. The unreaped direct Popen child
-        # cannot have its PID recycled, so only that handle is used here.
+        # No ACK means the supervisor cannot have started the target.
         if shutdown is not None and report_model_group:
             shutdown.registration_failed()
-        _terminate_direct_child(proc)
+        assert control_write is not None and status_read is not None
+        os.close(control_write)
+        os.close(status_read)
+        _terminate_direct_child(proc, deadline)
+        wall_limited = (
+            absolute_deadline is not None
+            and absolute_deadline <= started + timeout_seconds
+        )
+        if not identity_completed and wall_limited:
+            return RunResult(
+                exit_code=EXIT_TIMEOUT,
+                stdout_tail=b"",
+                stderr_tail=b"",
+                duration_seconds=time.monotonic() - started,
+                timed_out=True,
+                reason_id="wall_timeout",
+            )
         return RunResult(
             exit_code=EXIT_HARNESS,
             stdout_tail=b"",
@@ -1142,21 +1588,106 @@ def run_process(
             launch_failed=True,
             reason_id="process_identity_unavailable",
         )
+    registered_group = False
     if shutdown is not None and report_model_group:
         if group_identity is None:  # pragma: no cover - Windows fallback.
             group_identity = "direct:{}".format(proc.pid)
         if not shutdown.model_started(proc.pid, group_identity):
             shutdown.registration_failed()
+            if os.name == "posix":
+                assert control_write is not None and status_read is not None
+                os.close(control_write)
+                os.close(status_read)
+                _terminate_direct_child(proc, deadline)
+            else:  # pragma: no cover - exercised only on Windows.
+                _stop_process_group(proc, signal.SIGTERM, group_identity)
+            return RunResult(
+                exit_code=EXIT_HARNESS,
+                stdout_tail=b"",
+                stderr_tail=b"",
+                duration_seconds=time.monotonic() - started,
+                launch_failed=True,
+                reason_id="process_group_registration_failed",
+            )
+        registered_group = True
 
-    stdout_tail = TailBuffer(TAIL_LIMIT)
-    stderr_tail = TailBuffer(TAIL_LIMIT)
+    if os.name == "posix":
+        assert control_write is not None and status_read is not None
+        handshake_failed = False
+        try:
+            remaining = launch_deadline - _posix_process_clock()
+            if remaining <= 0:
+                handshake_failed = True
+            else:
+                readable, _, _ = select.select([status_read], [], [], remaining)
+                handshake_failed = (
+                    not readable
+                    or os.read(status_read, 2) != PROCESS_LAUNCH_READY
+                )
+            if not handshake_failed:
+                remaining = launch_deadline - _posix_process_clock()
+                if remaining <= 0:
+                    handshake_failed = True
+                else:
+                    _, writable, _ = select.select([], [control_write], [], remaining)
+                    handshake_failed = (
+                        not writable
+                        or os.write(control_write, PROCESS_LAUNCH_ACK) != 1
+                    )
+        except OSError:
+            handshake_failed = True
+        if handshake_failed:
+            os.close(control_write)
+            os.close(status_read)
+            stopped = _stop_process_group(
+                proc, signal.SIGKILL, group_identity, deadline
+            )
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    pipe.close()
+                except (AttributeError, OSError):
+                    pass
+            if registered_group and stopped and shutdown is not None:
+                shutdown.model_stopped(proc.pid, group_identity)
+            wall_limited = (
+                absolute_deadline is not None
+                and absolute_deadline <= started + timeout_seconds
+            )
+            if wall_limited and time.monotonic() >= launch_deadline_outer:
+                return RunResult(
+                    exit_code=EXIT_TIMEOUT,
+                    stdout_tail=b"",
+                    stderr_tail=b"",
+                    duration_seconds=time.monotonic() - started,
+                    timed_out=True,
+                    reason_id="wall_timeout",
+                    cleanup_failed=not stopped,
+                )
+            return RunResult(
+                exit_code=EXIT_HARNESS,
+                stdout_tail=b"",
+                stderr_tail=b"",
+                duration_seconds=time.monotonic() - started,
+                launch_failed=True,
+                reason_id=(
+                    "process_supervisor_handshake_failed"
+                    if stopped else "process_group_cleanup_failed"
+                ),
+                cleanup_failed=not stopped,
+            )
+
+    output_overflow = threading.Event()
+    if capture_output_limit is None:
+        stdout_tail = TailBuffer(TAIL_LIMIT)  # type: Any
+        stderr_tail = TailBuffer(TAIL_LIMIT)  # type: Any
+    else:
+        stdout_tail = BoundedCapture(capture_output_limit, output_overflow)
+        stderr_tail = BoundedCapture(capture_output_limit, output_overflow)
     classifier = StreamClassifier()
     stdout_pump_failed = threading.Event()
     final_parser = None  # type: Any
     if final_output_engine == "codex":
         final_parser = CodexFinalOutputParser()
-    elif final_output_engine == "claude":
-        final_parser = ClaudeFinalOutputParser()
 
     def pump(pipe: Any, destination: Any, tail: TailBuffer, parser: Any = None) -> None:
         try:
@@ -1187,52 +1718,177 @@ def run_process(
             target=pump,
             args=(
                 proc.stdout,
-                None if final_parser is not None else sys.stdout,
+                None if final_parser is not None or suppress_output else sys.stdout,
                 stdout_tail,
                 final_parser,
             ),
             daemon=True,
         ),
-        threading.Thread(target=pump, args=(proc.stderr, sys.stderr, stderr_tail), daemon=True),
+        threading.Thread(
+            target=pump,
+            args=(proc.stderr, None if suppress_output else sys.stderr, stderr_tail),
+            daemon=True,
+        ),
     ]
     for thread in threads:
         thread.start()
 
     timed_out = False
     interrupted = False
+    output_exceeded = False
     cleanup_failed = False
-    deadline = started + timeout_seconds
+    launch_failed = False
+    launch_errno = None  # type: Optional[int]
+    protocol_failed = False
+    target_returncode = None  # type: Optional[int]
+    status_buffer = bytearray()
+
+    def read_supervisor_status(wait_seconds: float) -> Optional[Tuple[str, int]]:
+        assert status_read is not None
+        try:
+            readable, _, _ = select.select([status_read], [], [], wait_seconds)
+            if not readable:
+                return None
+            chunk = os.read(status_read, 64)
+        except OSError:
+            return ("protocol", 0)
+        if not chunk:
+            return ("protocol", 0)
+        status_buffer.extend(chunk)
+        if len(status_buffer) > 64:
+            return ("protocol", 0)
+        if b"\n" not in status_buffer:
+            return None
+        line, _separator, remainder = bytes(status_buffer).partition(b"\n")
+        status_buffer[:] = remainder
+        fields = line.split()
+        if len(fields) != 2:
+            return ("protocol", 0)
+        try:
+            value = int(fields[1], 10)
+        except ValueError:
+            return ("protocol", 0)
+        if fields[0] == b"D" and -255 <= value <= 255:
+            return ("done", value)
+        if fields[0] == b"E" and 0 < value <= 65535:
+            return ("exec_error", value)
+        return ("protocol", 0)
     try:
-        while proc.poll() is None:
-            if shutdown is not None and shutdown.requested():
-                interrupted = True
-                cleanup_failed = not _stop_process_group(
-                    proc, signal.SIGTERM, group_identity
-                )
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                cleanup_failed = not _stop_process_group(
-                    proc, signal.SIGTERM, group_identity
-                )
-                break
-            try:
-                proc.wait(timeout=min(0.05, remaining))
-            except subprocess.TimeoutExpired:
-                pass
+        if os.name == "posix":
+            while target_returncode is None and not launch_failed and not protocol_failed:
+                supervisor_status = read_supervisor_status(0.0)
+                if supervisor_status is None:
+                    if output_overflow.is_set():
+                        output_exceeded = True
+                        cleanup_failed = not _stop_process_group(
+                            proc, signal.SIGTERM, group_identity, deadline
+                        )
+                        break
+                    if shutdown is not None and shutdown.requested():
+                        interrupted = True
+                        cleanup_failed = not _stop_process_group(
+                            proc, signal.SIGTERM, group_identity, deadline
+                        )
+                        break
+                    remaining = execution_deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        cleanup_failed = not _stop_process_group(
+                            proc, signal.SIGTERM, group_identity, deadline
+                        )
+                        break
+                    supervisor_status = read_supervisor_status(
+                        min(0.05, remaining)
+                    )
+                if supervisor_status is None:
+                    continue
+                kind, value = supervisor_status
+                if kind == "done":
+                    target_returncode = value
+                elif kind == "exec_error":
+                    launch_failed = True
+                    launch_errno = value
+                    target_returncode = 127 if value == errno.ENOENT else 126
+                else:
+                    protocol_failed = True
+        else:  # pragma: no cover - exercised only on Windows.
+            while proc.poll() is None:
+                if output_overflow.is_set():
+                    output_exceeded = True
+                    cleanup_failed = not _stop_process_group(
+                        proc, signal.SIGTERM, group_identity, deadline
+                    )
+                    break
+                if shutdown is not None and shutdown.requested():
+                    interrupted = True
+                    cleanup_failed = not _stop_process_group(
+                        proc, signal.SIGTERM, group_identity, deadline
+                    )
+                    break
+                remaining = execution_deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    cleanup_failed = not _stop_process_group(
+                        proc, signal.SIGTERM, group_identity, deadline
+                    )
+                    break
+                try:
+                    proc.wait(timeout=min(0.05, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
     except KeyboardInterrupt:
         interrupted = True
         cleanup_failed = not _stop_process_group(
-            proc, signal.SIGINT, group_identity
+            proc, signal.SIGINT, group_identity, deadline
         )
+
+    if output_overflow.is_set() and not timed_out and not interrupted:
+        output_exceeded = True
+        if _process_group_exists(proc.pid, proc):
+            cleanup_failed = not _stop_process_group(
+                proc, signal.SIGTERM, group_identity, deadline
+            ) or cleanup_failed
 
     if shutdown is not None and shutdown.requested() and not timed_out:
         interrupted = True
 
-    if _process_group_exists(proc.pid, proc):
+    if os.name == "posix":
+        assert control_write is not None and status_read is not None
+        if not timed_out and not interrupted and not output_exceeded and not cleanup_failed:
+            if protocol_failed:
+                # The supervisor may already have failed closed and exited on
+                # its own; reap it first so the zombie leader cannot make the
+                # group look alive and unstoppable.
+                _reap_exited_leader(proc, deadline)
+                stopped = _stop_process_group(
+                    proc, signal.SIGKILL, group_identity, deadline
+                )
+            else:
+                try:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    _, writable, _ = select.select(
+                        [], [control_write], [], remaining
+                    )
+                    acknowledged = bool(
+                        writable
+                        and os.write(control_write, PROCESS_CLEANUP_ACK) == 1
+                    )
+                except OSError:
+                    acknowledged = False
+                stopped = (
+                    _wait_for_process_group_until(proc.pid, proc, deadline)
+                    if acknowledged else False
+                )
+                if not stopped:
+                    stopped = _stop_process_group(
+                        proc, signal.SIGKILL, group_identity, deadline
+                    )
+            cleanup_failed = not stopped
+        os.close(control_write)
+        os.close(status_read)
+    elif _process_group_exists(proc.pid, proc):  # pragma: no cover - Windows.
         cleanup_failed = not _stop_process_group(
-            proc, signal.SIGTERM, group_identity
+            proc, signal.SIGTERM, group_identity, deadline
         ) or cleanup_failed
 
     group_stopped = not _process_group_exists(proc.pid, proc)
@@ -1245,12 +1901,20 @@ def run_process(
         shutdown.model_stopped(proc.pid, group_identity)
 
     for thread in threads:
-        thread.join(timeout=2.0)
-    rc = proc.returncode if proc.returncode is not None else 1
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    if os.name == "posix":
+        if protocol_failed:
+            rc = EXIT_HARNESS
+        else:
+            rc = target_returncode if target_returncode is not None else 1
+    else:  # pragma: no cover - exercised only on Windows.
+        rc = proc.returncode if proc.returncode is not None else 1
     if interrupted:
         rc = EXIT_ABORT
     elif timed_out:
         rc = 124
+    elif output_exceeded:
+        rc = EXIT_HARNESS
     elif rc < 0:
         rc = 128 + (-rc)
     final_output = None  # type: Optional[bytes]
@@ -1267,14 +1931,29 @@ def run_process(
         stdout_tail=stdout_tail.value(),
         stderr_tail=stderr_tail.value(),
         duration_seconds=time.monotonic() - started,
+        launch_failed=launch_failed or protocol_failed,
+        launch_errno=launch_errno,
         timed_out=timed_out,
         interrupted=interrupted,
         reason_id=(
-            "process_group_cleanup_failed" if cleanup_failed else classifier.reason_id
+            "wall_timeout"
+            if timed_out and absolute_deadline is not None
+            else "output_too_large"
+            if output_exceeded
+            else "process_group_cleanup_failed"
+            if cleanup_failed
+            else "process_supervisor_protocol_failed"
+            if protocol_failed
+            else "executable_missing"
+            if launch_failed and launch_errno == errno.ENOENT
+            else "launch_os_error"
+            if launch_failed
+            else classifier.reason_id
         ),
         final_output=final_output,
         final_output_error=final_output_error,
         cleanup_failed=cleanup_failed,
+        output_exceeded=output_exceeded,
     )
 
 
@@ -1285,6 +1964,7 @@ def run(
     timeout_seconds: float = DEFAULT_ATTEMPT_TIMEOUT,
     shutdown: Optional[ShutdownHandoff] = None,
     final_output_engine: Optional[str] = None,
+    absolute_deadline: Optional[float] = None,
 ) -> RunResult:
     print("+ " + shlex.join(cmd), file=sys.stderr)
     if dry_run:
@@ -1297,6 +1977,7 @@ def run(
         report_model_group=True,
         environment=model_subprocess_environment(),
         final_output_engine=final_output_engine,
+        absolute_deadline=absolute_deadline,
     )
     if result.launch_failed:
         if result.reason_id == "process_identity_unavailable":
@@ -1507,7 +2188,7 @@ class CircuitBreaker:
             vendors = state["vendors"]
             blocked = set()  # type: Set[str]
             changed = False
-            for vendor in ("claude", "codex"):
+            for vendor in ("codex",):
                 entry = vendors.get(vendor)
                 if not isinstance(entry, dict):
                     continue
@@ -1573,15 +2254,68 @@ def _validate_gate(raw: Any, source: str, default_timeout: float) -> Gate:
     return Gate(name, tuple(argv), float(timeout))
 
 
-def load_gates(gate_file: Optional[Path], cli_gates: Sequence[str], default_timeout: float, workdir: Path) -> Tuple[Gate, ...]:
+def _check_invocation_deadline(deadline: Optional[float], label: str) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise subprocess.TimeoutExpired(label, 0)
+
+
+def _read_regular_file_bounded(
+    path: Path,
+    limit: int,
+    deadline: Optional[float],
+    label: str,
+) -> bytes:
+    _check_invocation_deadline(deadline, label)
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(errno.EINVAL, "{} is not a regular file".format(label))
+    if before.st_size > limit:
+        raise ValueError("{} exceeds {} bytes".format(label, limit))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    payload = bytearray()
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise OSError(errno.EAGAIN, "{} changed while opening".format(label))
+        while True:
+            _check_invocation_deadline(deadline, label)
+            chunk = os.read(fd, min(64 * 1024, limit + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > limit:
+                raise ValueError("{} exceeds {} bytes".format(label, limit))
+        final = os.fstat(fd)
+        if _snapshot_stat_identity(final) != _snapshot_stat_identity(opened):
+            raise OSError(errno.EAGAIN, "{} changed while reading".format(label))
+    finally:
+        os.close(fd)
+    return bytes(payload)
+
+
+def load_gates(
+    gate_file: Optional[Path],
+    cli_gates: Sequence[str],
+    default_timeout: float,
+    workdir: Path,
+    deadline: Optional[float] = None,
+) -> Tuple[Gate, ...]:
     gates = []  # type: List[Gate]
     if gate_file is not None:
         try:
-            raw_bytes = gate_file.read_bytes()
+            raw_bytes = _read_regular_file_bounded(
+                gate_file, 1024 * 1024, deadline, "gate file"
+            )
+        except subprocess.TimeoutExpired:
+            raise
         except OSError as exc:
             raise ValueError("cannot read gate file {}: {}".format(gate_file, exc))
-        if len(raw_bytes) > 1024 * 1024:
-            raise ValueError("gate file exceeds 1 MiB")
         try:
             document = json.loads(raw_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
         except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
@@ -1608,6 +2342,7 @@ def load_gates(gate_file: Optional[Path], cli_gates: Sequence[str], default_time
     names = set()  # type: Set[str]
     frozen = []  # type: List[Gate]
     for gate in gates:
+        _check_invocation_deadline(deadline, "gate executable resolution")
         if gate.name in names:
             raise ValueError("duplicate gate name: {}".format(gate.name))
         names.add(gate.name)
@@ -1628,18 +2363,37 @@ def load_gates(gate_file: Optional[Path], cli_gates: Sequence[str], default_time
     return tuple(frozen)
 
 
-def _hash_regular_file(path: Path) -> ProtectedFile:
+def _hash_regular_file(
+    path: Path, deadline: Optional[float] = None
+) -> ProtectedFile:
+    _check_invocation_deadline(deadline, "gate integrity snapshot")
     resolved = path.resolve()
-    info = resolved.stat()
+    info = os.lstat(resolved)
     if not stat.S_ISREG(info.st_mode):
         raise OSError("protected gate path is not a regular file: {}".format(resolved))
     digest = hashlib.sha256()
-    with open(str(resolved), "rb") as handle:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(resolved, flags)
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _snapshot_stat_identity(opened) != _snapshot_stat_identity(info)
+        ):
+            raise OSError(errno.EAGAIN, "protected gate path changed before hashing")
         while True:
-            chunk = handle.read(1024 * 1024)
+            _check_invocation_deadline(deadline, "gate integrity snapshot")
+            chunk = os.read(fd, 1024 * 1024)
             if not chunk:
                 break
             digest.update(chunk)
+        final = os.fstat(fd)
+        if _snapshot_stat_identity(final) != _snapshot_stat_identity(opened):
+            raise OSError(errno.EAGAIN, "protected gate path changed while hashing")
+    finally:
+        os.close(fd)
     return ProtectedFile(resolved, digest.hexdigest(), stat.S_IMODE(info.st_mode))
 
 
@@ -1647,6 +2401,7 @@ def snapshot_gate_integrity(
     gates: Sequence[Gate],
     workdir: Path,
     gate_file: Optional[Path],
+    deadline: Optional[float] = None,
 ) -> Tuple[ProtectedFile, ...]:
     """Freeze gate policy, executables, and directly interpreted gate scripts."""
     candidates = []  # type: List[Path]
@@ -1671,7 +2426,7 @@ def snapshot_gate_integrity(
     protected = []  # type: List[ProtectedFile]
     seen = set()  # type: Set[str]
     for candidate in candidates:
-        frozen = _hash_regular_file(candidate)
+        frozen = _hash_regular_file(candidate, deadline)
         key = str(frozen.path)
         if key not in seen:
             seen.add(key)
@@ -1679,10 +2434,14 @@ def snapshot_gate_integrity(
     return tuple(protected)
 
 
-def verify_gate_integrity(protected: Sequence[ProtectedFile]) -> Optional[str]:
+def verify_gate_integrity(
+    protected: Sequence[ProtectedFile], deadline: Optional[float] = None
+) -> Optional[str]:
     for expected in protected:
         try:
-            actual = _hash_regular_file(expected.path)
+            actual = _hash_regular_file(expected.path, deadline)
+        except subprocess.TimeoutExpired:
+            raise
         except OSError:
             return str(expected.path)
         if actual.digest != expected.digest or actual.mode != expected.mode:
@@ -1697,18 +2456,120 @@ def _remaining_timeout(deadline: float, maximum: float = 120.0) -> float:
     return min(maximum, remaining)
 
 
-def _git_snapshot_command(arguments: Sequence[str], workdir: Path, deadline: float) -> subprocess.CompletedProcess:
-    environment = gate_subprocess_environment()
-    environment["GIT_TERMINAL_PROMPT"] = "0"
-    return subprocess.run(
-        ["git"] + list(arguments),
-        cwd=str(workdir),
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=_remaining_timeout(deadline),
-        check=False,
+def _run_git_snapshot_command(
+    arguments: Sequence[str],
+    workdir: Path,
+    deadline: float,
+    shutdown: Optional[ShutdownHandoff],
+    filter_overrides: Sequence[str],
+    output_limit: int,
+) -> subprocess.CompletedProcess:
+    executable = trusted_git_executable()
+    argv = (
+        [executable, "--no-pager", "--no-optional-locks"]
+        + list(GIT_HARDENED_CONFIG)
+        + list(filter_overrides)
+        + list(arguments)
+    )
+    result = run_process(
+        argv,
+        workdir,
+        _remaining_timeout(deadline),
+        shutdown,
+        report_model_group=True,
+        environment=git_subprocess_environment(),
+        suppress_output=True,
+        absolute_deadline=deadline,
+        capture_output_limit=output_limit,
+    )
+    if result.timed_out or time.monotonic() >= deadline:
+        raise subprocess.TimeoutExpired(argv, 0)
+    if result.output_exceeded:
+        raise OSError(errno.EFBIG, "bounded Git output exceeded its limit")
+    if result.launch_failed:
+        if result.launch_errno == errno.ENOENT:
+            raise FileNotFoundError(errno.ENOENT, "git executable not found")
+        raise OSError(result.launch_errno or errno.EIO, "bounded Git launch failed")
+    if result.cleanup_failed:
+        raise OSError(errno.EIO, "bounded Git cleanup failed")
+    return subprocess.CompletedProcess(
+        argv,
+        result.exit_code,
+        result.stdout_tail,
+        result.stderr_tail,
+    )
+
+
+def _git_filter_overrides(
+    workdir: Path,
+    deadline: float,
+    shutdown: Optional[ShutdownHandoff],
+) -> Tuple[str, ...]:
+    query = _run_git_snapshot_command(
+        [
+            "config",
+            "--includes",
+            "--local",
+            "--name-only",
+            "-z",
+            "--get-regexp",
+            r"^filter\.",
+        ],
+        workdir,
+        deadline,
+        shutdown,
+        (),
+        GIT_FILTER_OUTPUT_LIMIT,
+    )
+    if query.returncode not in (0, 1):
+        raise OSError(errno.EIO, "cannot inspect local Git filter configuration")
+    drivers = set()  # type: Set[str]
+    for raw_name in query.stdout.split(b"\0"):
+        if not raw_name:
+            continue
+        try:
+            name = raw_name.decode("utf-8")
+        except UnicodeError as exc:
+            raise OSError(errno.EILSEQ, "Git filter name is not valid UTF-8") from exc
+        match = re.fullmatch(
+            r"filter\.([A-Za-z0-9_.-]{1,128})\.(?:clean|smudge|process|required)",
+            name,
+        )
+        if match is None:
+            raise OSError(errno.EINVAL, "Git filter configuration name is unsafe")
+        drivers.add(match.group(1))
+    overrides = []  # type: List[str]
+    for driver in sorted(drivers):
+        for key, value in (
+            ("process", ""),
+            ("clean", ""),
+            ("smudge", ""),
+            ("required", "false"),
+        ):
+            overrides += ["-c", "filter.{}.{}={}".format(driver, key, value)]
+    return tuple(overrides)
+
+
+def _git_snapshot_command(
+    arguments: Sequence[str],
+    workdir: Path,
+    deadline: float,
+    shutdown: Optional[ShutdownHandoff] = None,
+    filter_overrides: Optional[Sequence[str]] = None,
+) -> subprocess.CompletedProcess:
+    if filter_overrides is None:
+        filter_overrides = (
+            ()
+            if arguments and arguments[0] == "config"
+            else _git_filter_overrides(workdir, deadline, shutdown)
+        )
+    return _run_git_snapshot_command(
+        arguments,
+        workdir,
+        deadline,
+        shutdown,
+        filter_overrides,
+        GIT_SNAPSHOT_OUTPUT_LIMIT,
     )
 
 
@@ -1861,14 +2722,25 @@ def _filesystem_snapshot(workdir: Path, deadline: float) -> str:
     return digest.hexdigest()
 
 
-def snapshot_worktree(workdir: Path, deadline: float) -> str:
+def snapshot_worktree(
+    workdir: Path,
+    deadline: float,
+    shutdown: Optional[ShutdownHandoff] = None,
+) -> str:
     """Hash Git-visible status/diff state, including untracked file contents."""
     try:
-        probe = _git_snapshot_command(["rev-parse", "--is-inside-work-tree"], workdir, deadline)
+        probe = _git_snapshot_command(
+            ["rev-parse", "--is-inside-work-tree"],
+            workdir,
+            deadline,
+            shutdown,
+            (),
+        )
     except FileNotFoundError:
         return _filesystem_snapshot(workdir, deadline)
     if probe.returncode != 0 or probe.stdout.strip() != b"true":
         return _filesystem_snapshot(workdir, deadline)
+    filter_overrides = _git_filter_overrides(workdir, deadline, shutdown)
 
     commands = (
         ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -1877,7 +2749,9 @@ def snapshot_worktree(workdir: Path, deadline: float) -> str:
     )
     outputs = []  # type: List[bytes]
     for arguments in commands:
-        completed = _git_snapshot_command(arguments, workdir, deadline)
+        completed = _git_snapshot_command(
+            arguments, workdir, deadline, shutdown, filter_overrides
+        )
         if completed.returncode != 0:
             raise OSError("git {} failed while snapshotting gate worktree".format(arguments[0]))
         outputs.append(completed.stdout)
@@ -1900,7 +2774,10 @@ def run_gates(
     for gate in gates:
         if shutdown is not None and shutdown.requested():
             return GateResult(gate.name, "abort", EXIT_ABORT, "shutdown_requested"), False
-        changed_path = verify_gate_integrity(protected)
+        try:
+            changed_path = verify_gate_integrity(protected, wall_deadline)
+        except subprocess.TimeoutExpired:
+            return GateResult(gate.name, "timeout", EXIT_TIMEOUT, "wall_timeout"), False
         if changed_path is not None:
             print("Quality gate integrity check failed for {}.".format(changed_path), file=sys.stderr)
             return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_integrity_changed"), True
@@ -1908,9 +2785,12 @@ def run_gates(
         if remaining <= 0:
             return GateResult(gate.name, "timeout", 124, "wall_timeout"), False
         try:
-            before = snapshot_worktree(workdir, wall_deadline)
+            before = snapshot_worktree(workdir, wall_deadline, shutdown)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            if time.monotonic() >= wall_deadline:
+            if isinstance(exc, subprocess.TimeoutExpired) and (
+                wall_deadline - time.monotonic()
+                <= PROCESS_CLEANUP_RESERVE_SECONDS + 0.1
+            ) or time.monotonic() >= wall_deadline:
                 return GateResult(gate.name, "timeout", EXIT_TIMEOUT, "wall_timeout"), False
             print("Cannot snapshot worktree before quality gate {!r}: {}".format(gate.name, exc), file=sys.stderr)
             return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_snapshot_failed"), True
@@ -1930,17 +2810,24 @@ def run_gates(
             shutdown,
             report_model_group=True,
             environment=gate_subprocess_environment(),
+            absolute_deadline=wall_deadline,
         )
         if result.interrupted:
             return GateResult(gate.name, "abort", EXIT_ABORT, "shutdown_requested"), False
         try:
-            after = snapshot_worktree(workdir, wall_deadline)
+            after = snapshot_worktree(workdir, wall_deadline, shutdown)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            if time.monotonic() >= wall_deadline:
+            if isinstance(exc, subprocess.TimeoutExpired) and (
+                wall_deadline - time.monotonic()
+                <= PROCESS_CLEANUP_RESERVE_SECONDS + 0.1
+            ) or time.monotonic() >= wall_deadline:
                 return GateResult(gate.name, "timeout", EXIT_TIMEOUT, "wall_timeout"), False
             print("Cannot snapshot worktree after quality gate {!r}: {}".format(gate.name, exc), file=sys.stderr)
             return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_snapshot_failed"), True
-        changed_path = verify_gate_integrity(protected)
+        try:
+            changed_path = verify_gate_integrity(protected, wall_deadline)
+        except subprocess.TimeoutExpired:
+            return GateResult(gate.name, "timeout", EXIT_TIMEOUT, "wall_timeout"), False
         if changed_path is not None:
             print("Quality gate integrity check failed for {}.".format(changed_path), file=sys.stderr)
             return GateResult(gate.name, "harness_error", EXIT_HARNESS, "gate_integrity_changed"), True
@@ -1972,7 +2859,7 @@ def run_gates(
 def run_gates_only(
     gates: Sequence[Gate],
     workdir: Path,
-    wall_timeout: float,
+    wall_deadline: float,
     journal: Journal,
     run_id: str,
     protected: Sequence[ProtectedFile],
@@ -1981,7 +2868,7 @@ def run_gates_only(
     """Verify an existing worktree with the frozen gate list and no model."""
     started = time.monotonic()
     gate_failure, harness_failure = run_gates(
-        gates, workdir, started + wall_timeout, protected, shutdown
+        gates, workdir, wall_deadline, protected, shutdown
     )
     if gate_failure is None:
         exit_code, status, failure_class, reason = 0, "passed", "success", "gates_passed"
@@ -2014,42 +2901,50 @@ def run_gates_only(
 
 def parse_args() -> argparse.Namespace:
     lane_help = "; ".join(
-        "{}: claude {}/{} vs codex {}/{}".format(
-            lane, spec["claude"][0], spec["claude"][1], spec["codex"][0], spec["codex"][1]
-        )
+        "{}: codex {}/{}".format(lane, spec["codex"][0], spec["codex"][1])
         for lane, spec in LANES.items()
     )
     parser = argparse.ArgumentParser(
-        description="Subscription-only Claude/Codex runner with bounded classified fallback",
+        description="Codex-only runner with bounded classified lane escalation",
         epilog="Lanes -- " + lane_help,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("prompt", nargs="?", help="Complete self-contained task prompt")
     parser.add_argument(
         "--doctor",
-        choices=("any", "both"),
-        metavar="REQUIREMENT",
-        help="Check subscription CLI installation/auth; REQUIREMENT is any or both",
+        action="store_true",
+        help="Check Codex CLI installation/auth without invoking a model",
+    )
+    parser.add_argument(
+        "--requirement",
+        choices=("codex",),
+        default="codex",
+        help="Doctor requirement (the only supported value is codex)",
     )
     parser.add_argument(
         "--doctor-timeout",
         type=doctor_timeout,
         default=DEFAULT_DOCTOR_TIMEOUT,
-        help="Per-vendor auth-status timeout (maximum 30 seconds)",
+        help="Codex auth-status timeout (maximum 30 seconds)",
     )
     parser.add_argument("--prompt-file", type=Path, help="Read the task prompt from a file")
     parser.add_argument("--workdir", type=Path, default=Path.cwd())
     parser.add_argument("--task", choices=("implement", "plan", "review", "inspect"), default="implement")
     parser.add_argument("--lane", choices=LANE_CHOICES, help="Starting capability lane")
     parser.add_argument("--tier", choices=LANE_CHOICES, help="Deprecated alias for --lane")
-    parser.add_argument("--primary", choices=("auto", "claude", "codex"), default="auto")
+    parser.add_argument("--primary", choices=("auto", "codex"), default="auto")
     parser.add_argument(
         "--final-output-only",
         action="store_true",
         help="Emit only a native-isolated final answer (inspect/review tasks only)",
     )
-    parser.add_argument("--no-escalate", action="store_true", help="Run only the selected lane pair")
-    parser.add_argument("--max-turns", type=positive_int, default=30, help="Claude turn cap")
+    parser.add_argument("--no-escalate", action="store_true", help="Run only the selected lane")
+    parser.add_argument(
+        "--max-turns",
+        type=positive_int,
+        default=30,
+        help="Compatibility option (unused by Codex)",
+    )
     parser.add_argument("--max-attempts", type=positive_int, default=DEFAULT_MAX_ATTEMPTS)
     parser.add_argument("--attempt-timeout", type=positive_float, default=DEFAULT_ATTEMPT_TIMEOUT)
     parser.add_argument("--wall-timeout", type=positive_float, default=DEFAULT_WALL_TIMEOUT)
@@ -2172,7 +3067,7 @@ def execute_chain(
     task: str,
     max_turns: int,
     attempt_timeout: float,
-    wall_timeout: float,
+    wall_deadline: float,
     max_quality_failures: int,
     gates: Sequence[Gate],
     journal: Journal,
@@ -2185,7 +3080,7 @@ def execute_chain(
     final_output_only: bool = False,
 ) -> ChainOutcome:
     started = time.monotonic()
-    deadline = started + wall_timeout
+    deadline = wall_deadline
     blocked = circuit.blocked_vendors()
     attempts_run = 0
     quality_failures = 0
@@ -2214,12 +3109,16 @@ def execute_chain(
                 continue
 
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            # Do not begin a supervisor handshake in the final scheduling
+            # sliver of the wall contract.  Under load that race could turn a
+            # wall exhaustion into a spurious launch/protocol error.
+            if remaining <= PROCESS_MIN_LAUNCH_SECONDS:
                 final_class = "timeout"
                 final_reason = "wall_timeout"
                 final_exit = EXIT_TIMEOUT
                 break
             timeout = min(attempt_timeout, remaining)
+            wall_limited = remaining <= attempt_timeout
             model, effort = LANES[lane_name][engine]
             if attempts_run == 0 and next_notice is None:
                 attempt_prompt = prompt
@@ -2252,17 +3151,31 @@ def execute_chain(
                 timeout,
                 shutdown,
                 engine if final_output_only else None,
+                deadline,
             )
             attempts_run += 1
-            failure = classify_failure(result) if result.exit_code != 0 else None
+            deadline_expired = time.monotonic() >= deadline
+            failure = (
+                Failure("timeout", "wall_timeout")
+                if deadline_expired
+                else classify_failure(result)
+                if result.exit_code != 0
+                else None
+            )
             journal.write(_attempt_record(
                 run_id, planned_index, len(attempts), lane_name, engine, model, effort, task, result, failure
             ))
 
+            if deadline_expired:
+                final_exit = EXIT_TIMEOUT
+                final_class = "timeout"
+                final_reason = "wall_timeout"
+                break
+
             if failure is not None:
                 final_class = failure.failure_class
                 final_reason = failure.reason_id
-                if result.timed_out and time.monotonic() >= deadline:
+                if result.timed_out and wall_limited:
                     final_exit = EXIT_TIMEOUT
                     final_class = "timeout"
                     final_reason = "wall_timeout"
@@ -2456,6 +3369,7 @@ class ResultAttestation:
 
 
 def main() -> int:
+    invocation_started = time.monotonic()
     active = os.environ.get(RECURSION_ENV)
     if active:
         print(
@@ -2492,7 +3406,7 @@ def main() -> int:
         signal.signal(signum, terminate)
     shutdown.start()
     try:
-        return _main_body(attestation, shutdown)
+        return _main_body(attestation, shutdown, invocation_started)
     finally:
         shutdown.acknowledge()
         shutdown.close()
@@ -2501,16 +3415,26 @@ def main() -> int:
 
 
 def _main_body(
-    attestation: Optional[ResultAttestation], shutdown: ShutdownHandoff
+    attestation: Optional[ResultAttestation],
+    shutdown: ShutdownHandoff,
+    invocation_started: float,
 ) -> int:
     if shutdown.requested():
         return EXIT_ABORT
     args = parse_args()
-    if args.doctor is not None:
+    wall_deadline = invocation_started + args.wall_timeout
+    if time.monotonic() >= wall_deadline:
+        return EXIT_TIMEOUT
+    if args.doctor:
         if args.prompt is not None or args.prompt_file is not None or args.gates_only or args.dry_run:
             print("--doctor accepts no prompt and cannot be combined with gates-only or dry-run", file=sys.stderr)
             return 2
-        return run_doctor(args.doctor, args.doctor_timeout, shutdown)
+        return run_doctor(
+            args.requirement,
+            args.doctor_timeout,
+            shutdown,
+            wall_deadline,
+        )
     if args.final_output_only and (args.gates_only or args.task not in ("inspect", "review")):
         print(
             "--final-output-only is valid only for inspect or review model tasks",
@@ -2547,14 +3471,22 @@ def _main_body(
 
     primary = args.primary
     if primary == "auto":
-        primary = "codex" if args.task in ("inspect", "review") else "claude"
-    fallback = "codex" if primary == "claude" else "claude"
+        primary = "codex"
     chain = build_escalation_chain(lane, args.no_escalate)
-    attempts = build_attempts(chain, primary, fallback)[: args.max_attempts]
+    attempts = build_attempts(chain, primary)[: args.max_attempts]
 
     gate_file = args.gate_file.expanduser().resolve() if args.gate_file else None
     try:
-        gates = load_gates(gate_file, args.gate, args.gate_timeout, workdir)
+        gates = load_gates(
+            gate_file,
+            args.gate,
+            args.gate_timeout,
+            workdir,
+            wall_deadline,
+        )
+    except subprocess.TimeoutExpired:
+        print("Runner wall-clock budget expired while loading gate policy.", file=sys.stderr)
+        return EXIT_TIMEOUT
     except FileNotFoundError as exc:
         print("Gate configuration harness error: {}".format(exc), file=sys.stderr)
         return EXIT_HARNESS
@@ -2589,8 +3521,36 @@ def _main_body(
             )
         return 0
 
+    if not args.gates_only:
+        identity_budget = min(
+            5.0,
+            max(0.001, wall_deadline - time.monotonic()),
+        )
+        executable, identity_reason = verify_codex_identity(
+            identity_budget, shutdown, wall_deadline
+        )
+        if executable is None:
+            print(
+                "Codex executable identity check failed ({}).".format(
+                    identity_reason
+                ),
+                file=sys.stderr,
+            )
+            if identity_reason.endswith("_interrupted"):
+                return EXIT_ABORT
+            if identity_reason.endswith("_timeout"):
+                return EXIT_TIMEOUT
+            return EXIT_HARNESS
+        global CODEX_CLI
+        CODEX_CLI = executable
+
     try:
-        protected_gates = snapshot_gate_integrity(gates, workdir, gate_file)
+        protected_gates = snapshot_gate_integrity(
+            gates, workdir, gate_file, wall_deadline
+        )
+    except subprocess.TimeoutExpired:
+        print("Runner wall-clock budget expired during gate integrity snapshot.", file=sys.stderr)
+        return EXIT_TIMEOUT
     except OSError as exc:
         print("Gate integrity snapshot failed before model launch: {}".format(exc), file=sys.stderr)
         return EXIT_HARNESS
@@ -2609,7 +3569,13 @@ def _main_body(
     if args.gates_only:
         # No vendor runs, so the quota/auth circuit is neither read nor written.
         exit_code = run_gates_only(
-            gates, workdir, args.wall_timeout, journal, run_id, protected_gates, shutdown
+            gates,
+            workdir,
+            wall_deadline,
+            journal,
+            run_id,
+            protected_gates,
+            shutdown,
         )
         outcome = ChainOutcome(exit_code, None)
         if shutdown.requested():
@@ -2619,6 +3585,9 @@ def _main_body(
             return EXIT_HARNESS
         return exit_code
     circuit = CircuitBreaker(circuit_path, args.circuit_cooldown)
+    remaining_wall = wall_deadline - time.monotonic()
+    if remaining_wall <= 0:
+        return EXIT_TIMEOUT
     outcome = execute_chain(
         attempts,
         prompt,
@@ -2626,7 +3595,7 @@ def _main_body(
         args.task,
         args.max_turns,
         args.attempt_timeout,
-        args.wall_timeout,
+        wall_deadline,
         args.max_quality_failures,
         gates,
         journal,

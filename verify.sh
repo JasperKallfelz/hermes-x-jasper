@@ -1,138 +1,146 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# Run every check this repo has, in the order they are cheapest to fix.
-#
-#   ./verify.sh              # everything (the patch check needs network)
-#   ./verify.sh --offline    # skip the upstream clone + patch check
-#   HERMES_VERIFY_UPSTREAM_REPO=/path/to/mirror ./verify.sh
-#
-# The patch check clones upstream at the pinned commit into a temp dir and runs
-# `git apply --check --whitespace=error-all`. That is the one test that proves the starter still works
-# against the real repo, so it is on by default and only skipped explicitly.
-# ---------------------------------------------------------------------------
+# Run local development checks. Release publication uses scripts/release_audit.sh.
 set -uo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR" || exit 1
-
 UPSTREAM_REPO="${HERMES_VERIFY_UPSTREAM_REPO:-https://github.com/NousResearch/hermes-agent}"
-PINNED_COMMIT="3ef6bbd201263d354fd83ec55b3c306ded2eb72a"
+PINNED_COMMIT="5fc308a70719a83cccdbba4c0e39c23f5a8239d5"
+PINNED_TAG="v2026.8.27"
 PATCH_FILE="$REPO_DIR/patches/voice-and-desktop-features.patch"
-
 OFFLINE=0
 [ "${1:-}" = "--offline" ] && OFFLINE=1
-
-RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
+[ "$#" -le 1 ] || { echo "usage: $0 [--offline]" >&2; exit 2; }
 FAILURES=0
+TMP_DIR=""
 
-step() { printf '\n%s==> %s%s\n' "$CYAN" "$*" "$NC"; }
-pass() { printf '%s  PASS%s %s\n' "$GREEN" "$NC" "$*"; }
-fail() { printf '%s  FAIL%s %s\n' "$RED" "$NC" "$*"; FAILURES=$((FAILURES + 1)); }
-skip() { printf '%s  SKIP%s %s\n' "$YELLOW" "$NC" "$*"; }
-
-# --- 1. shell syntax -------------------------------------------------------
-step "Shell syntax"
-for script in setup.sh verify.sh scripts/gitleaks_scan.sh messaging/*.sh; do
-  if bash -n "$script" 2>/dev/null; then pass "bash -n $script"; else
-    bash -n "$script"; fail "bash -n $script"
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2329
+cleanup() {
+  if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf -- "$TMP_DIR"
   fi
-done
+}
+trap cleanup EXIT
+
+step() { printf '\n==> %s\n' "$*"; }
+pass() { printf '  PASS %s\n' "$*"; }
+fail() { printf '  FAIL %s\n' "$*"; FAILURES=$((FAILURES + 1)); }
+skip() { printf '  SKIP %s\n' "$*"; }
+
+bounded_clone() {
+  python3 - 180 git clone --quiet --branch "$PINNED_TAG" --single-branch \
+    "$UPSTREAM_REPO" "$TMP_DIR/hermes" <<'PY'
+import subprocess
+import sys
+try:
+    result = subprocess.run(
+        sys.argv[2:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=int(sys.argv[1]), check=False,
+    )
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+raise SystemExit(result.returncode)
+PY
+}
+
+step "Shell syntax and ShellCheck"
+if bash -n setup.sh verify.sh scripts/*.sh messaging/*.sh modules/pi-runtime/*.sh; then pass "bash -n"; else fail "bash -n"; fi
 if ! command -v shellcheck >/dev/null 2>&1; then
   fail "shellcheck missing — install it first"
-elif shellcheck -S warning setup.sh verify.sh scripts/gitleaks_scan.sh messaging/*.sh; then
+elif shellcheck -S warning setup.sh verify.sh scripts/*.sh messaging/*.sh modules/pi-runtime/*.sh; then
   pass "shellcheck"
 else
   fail "shellcheck"
 fi
 
-# --- 2. python compiles ----------------------------------------------------
 step "Python syntax"
-if PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache \
+if PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/hermes-coder-pycache" \
     python3 -m compileall -q scripts tests second-brain/src second-brain/tests \
-      coder-stack/bin coder-stack/tests >/dev/null; then
-  pass "compileall scripts tests second-brain coder-stack"
+      coder-stack/bin coder-stack/tests modules/pi-runtime/pi_module.py; then
+  pass "compileall"
 else
-  fail "compileall found a syntax error"
+  fail "compileall"
 fi
 
-# --- 3. tests --------------------------------------------------------------
 step "Tests"
-if python3 -c 'import pytest, yaml' 2>/dev/null; then
-  ROOT_TESTS=0
-  CODER_TESTS=0
-  if python3 -m pytest tests second-brain/tests -q; then
-    ROOT_TESTS=1
-  fi
-  CODER_PYTHON=python3
-  CODER_TEST_PATH=$PATH
+if ! python3 -c 'import pytest, yaml' 2>/dev/null; then
+  fail "pytest or PyYAML missing — install them first: python3 -m pip install pytest pyyaml"
+else
+  root_ok=0
+  coder_ok=0
+  python3 -m pytest tests second-brain/tests -q && root_ok=1
+  coder_python=python3
+  coder_path=$PATH
   if [ "$(uname -s)" = "Darwin" ] && [ -x /usr/bin/python3 ]; then
-    # The authoritative coder-stack CI target on macOS is Apple Python 3.9.
-    # The fixture narrowly holds only bounded-output Git group leaders long
-    # enough for Darwin process-identity capture; ordinary Git is undelayed.
-    CODER_PYTHON=/usr/bin/python3
-    CODER_TEST_PATH="$REPO_DIR/tests/fixtures/darwin-git-bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    coder_python=/usr/bin/python3
+    coder_path="$REPO_DIR/tests/fixtures/darwin-git-bin:/usr/bin:/bin:/usr/sbin:/sbin"
   fi
-  if (cd coder-stack && PATH="$CODER_TEST_PATH" \
-      PYTHONPYCACHEPREFIX=/tmp/hermes-coder-pycache \
-      "$CODER_PYTHON" -m unittest discover -s tests -q); then
-    CODER_TESTS=1
-  fi
-  if [ "$ROOT_TESTS" -eq 1 ] && [ "$CODER_TESTS" -eq 1 ]; then
-    pass "root, Second Brain, and vendored coder-stack test suites"
-  else
-    fail "test suite"
-  fi
-else
-  fail "pytest or PyYAML missing — install them first: pip install pytest pyyaml"
+  (cd coder-stack && PATH="$coder_path" \
+    PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/hermes-coder-pycache" \
+    "$coder_python" -m unittest discover -s tests -q) && coder_ok=1
+  if [ "$root_ok" -eq 1 ] && [ "$coder_ok" -eq 1 ]; then pass "all model-free suites"; else fail "tests"; fi
 fi
 
-# --- 4. leak audit ---------------------------------------------------------
-step "Public audit"
-if python3 scripts/audit_public.py "$REPO_DIR" --history; then
-  pass "no secrets/PII/local paths"
+step "Custom tree/full-history/metadata audit"
+if python3 scripts/audit_public.py "$REPO_DIR" --history; then pass "audit_public"; else fail "audit_public"; fi
+
+step "Checksum-pinned Gitleaks"
+if ! scripts/install_gitleaks.sh --verify-only; then
+  fail "workspace Gitleaks missing/invalid — run scripts/install_gitleaks.sh"
+elif scripts/gitleaks_scan.sh; then
+  pass "Gitleaks tree + full history"
 else
-  fail "audit_public found something — do not publish"
+  fail "Gitleaks"
 fi
 
-# --- 5. gitleaks secret-scan gate (current tree + full history) ------------
-step "Gitleaks secret-scan gate"
-if command -v gitleaks >/dev/null 2>&1; then
-  if bash "$REPO_DIR/scripts/gitleaks_scan.sh"; then
-    pass "gitleaks: current tree and history clean"
-  else
-    fail "gitleaks found secrets"
-  fi
-else
-  fail "gitleaks missing — install pinned v8.30.1"
-fi
-
-# --- 6. patch applies to a fresh pinned upstream ---------------------------
-step "Patch applies to upstream @ $PINNED_COMMIT"
+step "Patch applies to exact upstream $PINNED_TAG / $PINNED_COMMIT"
 if [ "$OFFLINE" -eq 1 ]; then
-  skip "--offline"
-elif ! command -v git >/dev/null 2>&1; then
-  fail "git not on PATH"
+  skip "--offline (dependency/network patch proof explicitly skipped)"
 else
-  TMP_DIR="$(mktemp -d)"
-  # shellcheck disable=SC2064  # expand TMP_DIR now, not at trap time
-  trap "rm -rf '$TMP_DIR'" EXIT
-  if ! git clone --quiet "$UPSTREAM_REPO" "$TMP_DIR/hermes" 2>/dev/null; then
-    fail "could not clone $UPSTREAM_REPO (network required; re-run with --offline to skip)"
-  elif ! git -C "$TMP_DIR/hermes" checkout --quiet --detach "$PINNED_COMMIT" 2>/dev/null; then
-    fail "pinned commit $PINNED_COMMIT not found upstream"
-  elif git -C "$TMP_DIR/hermes" apply --check --whitespace=error-all "$PATCH_FILE"; then
-    pass "git apply --check --whitespace=error-all"
+  TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-verify.XXXXXX")" \
+    || { fail "mktemp failed"; TMP_DIR=""; }
+  if [ -z "$TMP_DIR" ] || [ ! -d "$TMP_DIR" ]; then
+    fail "mktemp returned an empty or invalid directory"
   else
-    git -C "$TMP_DIR/hermes" apply --check --whitespace=error-all -v "$PATCH_FILE" 2>&1 | tail -20
-    fail "patch no longer applies to the pinned commit"
+    cloned=0
+    for attempt in 1 2 3; do
+      if bounded_clone; then cloned=1; break; fi
+      rm -rf -- "$TMP_DIR/hermes"
+      [ "$attempt" -lt 3 ] || break
+    done
+    if [ "$cloned" -ne 1 ]; then
+      fail "bounded exact-tag clone failed; use --offline only when intentionally skipping it"
+    elif [ "$(git -C "$TMP_DIR/hermes" rev-parse "refs/tags/$PINNED_TAG^{}" 2>/dev/null)" != "$PINNED_COMMIT" ]; then
+    fail "tag does not peel to the pinned commit"
+    elif [ "$(git -C "$TMP_DIR/hermes" rev-parse HEAD 2>/dev/null)" != "$PINNED_COMMIT" ]; then
+      fail "cloned HEAD is not the pinned commit"
+    elif git -C "$TMP_DIR/hermes" apply --check --whitespace=error-all "$PATCH_FILE"; then
+      pass "plain git apply --check --whitespace=error-all"
+    else
+      fail "patch proof"
+    fi
   fi
 fi
 
-# --- summary ---------------------------------------------------------------
+step "Diff hygiene"
+if [ -n "${VERIFY_DIFF_BASE:-}" ]; then
+  if git diff --check "$VERIFY_DIFF_BASE...HEAD"; then
+    pass "actual base range"
+  else
+    fail "actual base range"
+  fi
+fi
+if git diff --check; then
+  pass "working tree"
+else
+  fail "working tree"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
-  printf '%sAll checks passed.%s\n' "$GREEN" "$NC"
+  echo "All checks passed."
   exit 0
 fi
-printf '%s%d check(s) failed.%s\n' "$RED" "$FAILURES" "$NC"
+echo "$FAILURES check(s) failed."
 exit 1

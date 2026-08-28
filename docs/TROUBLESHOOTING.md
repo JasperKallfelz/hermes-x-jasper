@@ -15,11 +15,13 @@ Start here:
 
 ### `patch does not apply to ~/hermes-agent`
 
-The checkout is not at the pinned commit, or something already modified it. Find out which:
+The target is Hermes Agent v0.20.6, tag `v2026.8.27`, at the exact peeled
+commit below. The checkout is not at that commit, or something already
+modified it. Find out which:
 
 ```bash
-git -C ~/hermes-agent rev-parse HEAD          # should be 3ef6bbd201...
-git -C ~/hermes-agent status --short          # should show only the intentional patch changes
+git -C ~/hermes-agent rev-parse HEAD          # should be 5fc308a70719...
+git -C ~/hermes-agent status --short          # clean, or only the exact patch tree
 git -C ~/hermes-agent apply --reverse --check -v ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
 ```
 
@@ -28,14 +30,14 @@ If the patch is *already applied*, `setup.sh` detects that and skips it — this
 ```bash
 cd ~/hermes-agent
 git checkout -- .                       # drop all local changes, including the patch
-git checkout --detach 3ef6bbd201263d354fd83ec55b3c306ded2eb72a
+git checkout --detach 5fc308a70719a83cccdbba4c0e39c23f5a8239d5
 ```
 
 Then re-run `./setup.sh`.
 
-### `~/hermes-agent has uncommitted changes`
+### `~/hermes-agent has changes beyond the exact starter patch`
 
-Deliberate. The installer will not check out over your edits and destroy them. Commit them, `git stash` them, or install somewhere else with `--install-dir ~/src/hermes-agent`.
+Deliberate. The installer compares complete file manifests in a disposable non-hardlinked clone, so it does not write candidate objects or indexes into your checkout. It will not check out over, merge into, or silently tolerate unrelated edits—including edits hidden by assume-unchanged or skip-worktree. Preserve them yourself, or install somewhere else with `--install-dir ~/src/hermes-agent`. Rejected origin URLs are never echoed because they may contain userinfo or query credentials.
 
 ### `Python 3.11+ is required`
 
@@ -43,7 +45,7 @@ macOS: `brew install python@3.11`. Debian/Ubuntu: `sudo apt install python3.11 p
 
 ### The upstream installer fails
 
-`setup.sh` delegates to upstream's `setup-hermes.sh` on purpose — it owns `venv/bin/hermes`, the venv and the dependency set. Re-runs skip this step once `~/hermes-agent/venv/bin/hermes` exists. If the first install fails, run it directly to see the real error:
+`setup.sh` delegates to upstream's `setup-hermes.sh` on purpose. An executable alone is not completion: the private marker also binds the pin, dependency/installer digests, patch, platform, interpreter and requested voice set, then rechecks `hermes --version` and `pip check`. A missing/stale marker or broken executable reruns synchronization; unchanged verified reruns do not reinstall voice packages. If installation fails, no marker is written.
 
 ```bash
 cd ~/hermes-agent && bash setup-hermes.sh
@@ -69,7 +71,7 @@ If you do not want voice at all: `./setup.sh --skip-voice`.
 
 ### My config was not updated
 
-By design. `setup.sh` never modifies an existing `~/.hermes/config.yaml`. Fold the overlay in yourself:
+If the config existed before setup, it is intentionally untouched. If it was absent before setup, a config created by the upstream wizard is not treated as pre-existing: setup automatically adds missing starter keys after the wizard while keeping every wizard-selected value. For an older pre-existing config, fold the overlay in yourself:
 
 ```bash
 python3 scripts/merge_config.py --base ~/.hermes/config.yaml --overlay config.example.yaml          # diff
@@ -91,7 +93,7 @@ cp ~/.hermes/config.yaml.bak-<timestamp> ~/.hermes/config.yaml
 
 Two usual causes:
 
-1. **It is a \[patch\] key and the patch is not applied.** Hermes ignores keys it does not know. Check: `git -C ~/hermes-agent diff --stat` should show ~18 changed files.
+1. **It is a \[patch\] key and the patch is not applied.** Hermes ignores keys it does not know. Check with `git -C ~/hermes-agent apply --reverse --check ~/hermes-x-jasper/patches/voice-and-desktop-features.patch`.
 2. **It needs a plugin that is not installed.** `memory.provider: holographic` and `context.engine: lcm` both name engines that ship separately. Without the plugin they are inert.
 
 ### `expected a YAML mapping at the top level`
@@ -131,7 +133,7 @@ python3 scripts/jarvis_style_tts.py /tmp/in.txt /tmp/out.mp3
 
 ### `audit_public found something`
 
-It prints `file:line: [rule] message` for every hit and never prints the matched secret value. Real secret? Remove it, **rotate it**, and rewrite the history if it was ever committed. Genuine false positive? Add an `audit:allow` marker to that line, or use a clearer placeholder (`<YOUR_TOKEN>`, `user@example.com`, `~/path`). Whole-file `audit:allow-file` bypasses are unsupported.
+It prints `file:line: [rule] message` for every hit and never prints the matched value. Real secret? Remove it, **rotate it**, and rewrite unpublished history. A genuine current false positive needs both a narrow trailing `audit:allow` comment and its exact path/rule/line hash in `security/audit-exceptions.json`; history additionally requires the immutable commit. Uninventoried markers, whole-file bypasses, Gitleaks inline allows, and `.gitleaksignore` do not bypass release gates.
 
 Add your own strings to catch:
 
@@ -141,7 +143,7 @@ PUBLIC_AUDIT_DENYLIST="my-real-name,my-server.example" make audit
 
 ### CI fails on the patch check
 
-Upstream moved, or the patch was regenerated against a different tree. The pinned commit is the contract: it appears in `setup.sh`, `verify.sh`, `.github/workflows/ci.yml` and `README.md`, and all four must agree.
+Upstream moved, or the patch was regenerated against a different tree. The exact commit/tag/version tuple is the contract: it appears in the installer, verifier, CI, docs, and release-contract tests, and every copy must agree. The release gate uses plain `git apply --check --whitespace=error-all`; a three-way fallback is not accepted.
 
 ---
 

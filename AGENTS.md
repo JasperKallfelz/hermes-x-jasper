@@ -21,18 +21,22 @@ global `code_execution.timeout` to accommodate it.
 ## What this starter ships (and what it does not)
 
 - **Pinned upstream.** Hermes Agent is cloned at commit
-  `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` (v0.19.0, tag `v2026.7.20`) and
+  `5fc308a70719a83cccdbba4c0e39c23f5a8239d5` (v0.20.6, tag `v2026.8.27`) and
   patched in place, leaving intentional tracked working-tree changes. This repo
   vendors none of it.
 - **Feature patch** (`patches/voice-and-desktop-features.patch`): auto-CDP
-  browser, TTS runtime overrides, Telegram keyboard cleanup,
-  each with tests. It deliberately excludes the Discord voice stack and the
-  upstream detach-running-turn feature.
+  launch plus loopback binding, internal TTS voice/model runtime overrides,
+  and Telegram keyboard cleanup, each with tests. Hermes v0.20.6 already owns
+  persistent `browser.cdp_url`, interactive browser connect, and model-facing
+  TTS provider/speed arguments; the patch does not duplicate them. It
+  deliberately excludes the Discord voice stack and the upstream
+  detach-running-turn feature.
 - **Config overlay** (`config.example.yaml`): only keys this starter turns on,
-  reconciled to the v0.19 schema. `delegation.max_concurrent_children` (8) is the
-  single unified cap for both synchronous and background children — the old
-  `max_async_children` is gone. `code_execution.mode` is `project` or `strict`
-  only. There is no `second_brain:` section (not an upstream key).
+  reconciled to the v0.20.6 schema. `delegation.max_concurrent_children` (8)
+  is the single unified cap for both synchronous and background children — the
+  old `max_async_children` is gone. `code_execution.mode` is `project` or
+  `strict` only, with the upstream 300-second/50-call limits. There is no
+  `second_brain:` section (not an upstream key).
 - **Heavy-work routing.** Long jobs (AI coding CLIs, builds, full test suites)
   run under `terminal(background=true, notify_on_complete=true)` with the
   `process` tool — never `execute_code`, `nohup`, `disown`, `setsid`, or `&`.
@@ -49,4 +53,15 @@ global `code_execution.timeout` to accommodate it.
   (`scripts/whatsapp-bridge`) — no upstream bridge code is vendored — render
   `launchd` plist templates, and print pairing/health/env guidance. Nothing runs
   unless you invoke it, and no real numbers, sessions, or machine paths ship.
+- **Experimental opt-in Pi runtime** (`modules/pi-runtime/`): a manifest-locked
+  distribution for a separate checkout at base
+  `306db2776c6b6f1acc85c31c4dabba3263f0e9fd` plus feature
+  `c1093d23837bab98013bc9929d0d2679416601e5`. Hermes remains the control plane;
+  Pi 0.84.3 is the contained coding runtime. Setup never authenticates, edits
+  live config, installs globally, or runs Docker. The immutable linux/arm64
+  image is
+  `sha256:e89f45110e9277902bafbf49009e842bc9e38180e668fea8a6ff3dcdb2dd2cdf`;
+  evidence is 1,419 offline tests and Docker 5/5, while authenticated model E2E
+  is a current gap because the prior OAuth expired. Nothing runs unless the
+  separate module is explicitly installed and activated.
 - This public starter does not reproduce the maintainer's private live setup.

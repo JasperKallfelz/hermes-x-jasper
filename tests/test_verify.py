@@ -22,11 +22,13 @@ class VerifyControlFlowTest(unittest.TestCase):
         (self.root / "scripts" / "gitleaks_scan.sh").write_text(
             "#!/bin/sh\nexit 0\n", encoding="utf-8"
         )
+        (self.root / "scripts" / "install_gitleaks.sh").write_text(
+            "#!/bin/sh\nexit ${INSTALL_GITLEAKS_STATUS:-0}\n", encoding="utf-8"
+        )
         self.log = self.root / "calls.log"
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self._stub("shellcheck", "exit 0")
-        self._stub("gitleaks", "exit 0")
         self._stub("uname", "printf 'Linux\\n'")
 
     def _stub(self, name, body):
@@ -34,9 +36,7 @@ class VerifyControlFlowTest(unittest.TestCase):
         path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
         path.chmod(0o755)
 
-    def run_verify(self, pytest_status=0, include_gitleaks=True):
-        if not include_gitleaks:
-            (self.bin / "gitleaks").unlink()
+    def run_verify(self, pytest_status=0, install_gitleaks_status=0):
         self._stub(
             "python3",
             textwrap.dedent(
@@ -51,6 +51,7 @@ class VerifyControlFlowTest(unittest.TestCase):
         env.update(
             PATH=f"{self.bin}:/usr/bin:/bin",
             VERIFY_CALL_LOG=str(self.log),
+            INSTALL_GITLEAKS_STATUS=str(install_gitleaks_status),
         )
         return subprocess.run(
             ["/bin/bash", str(self.root / "verify.sh"), "--offline"],
@@ -68,11 +69,19 @@ class VerifyControlFlowTest(unittest.TestCase):
         ]
         self.assertEqual(root_unittest, [])
 
-    def test_missing_gitleaks_is_a_failure_not_a_skip(self):
-        result = self.run_verify(include_gitleaks=False)
+    def test_invalid_workspace_gitleaks_is_a_failure_not_a_skip(self):
+        result = self.run_verify(install_gitleaks_status=1)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("FAIL", result.stdout)
-        self.assertIn("gitleaks missing", result.stdout)
+        self.assertIn("workspace Gitleaks", result.stdout)
+
+    def test_mktemp_cleanup_is_data_not_interpolated_trap_source(self):
+        text = (REPO / "verify.sh").read_text(encoding="utf-8")
+        self.assertIn('TMP_DIR="$(mktemp -d', text)
+        self.assertIn('[ -z "$TMP_DIR" ]', text)
+        self.assertIn('rm -rf -- "$TMP_DIR"', text)
+        self.assertIn("trap cleanup EXIT", text)
+        self.assertNotIn('trap "rm -rf', text)
 
 
 if __name__ == "__main__":

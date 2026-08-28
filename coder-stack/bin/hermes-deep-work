@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Start a verified Codex-only deep-work flow from any shell.
+# It creates and preserves an isolated Git worktree; it never commits, merges,
+# pushes, rebases, or cleans up automatically.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: hermes-deep-work <repo> [--lane auto|fast|normal|complex|frontier|security] [--dry-run] <task...>
+
+Examples:
+  hermes-deep-work ~/project --lane complex 'Refactor the event pipeline; run the real checks.'
+  hermes-deep-work ~/project 'Implement the requested feature according to repository rules.'
+EOF
+}
+
+if [[ $# -lt 2 ]]; then
+  usage >&2
+  exit 64
+fi
+
+repo=$1
+shift
+lane=auto
+dry_run=false
+if [[ ${1:-} == "--lane" ]]; then
+  [[ $# -ge 3 ]] || { usage >&2; exit 64; }
+  lane=$2
+  shift 2
+fi
+if [[ ${1:-} == "--dry-run" ]]; then
+  dry_run=true
+  shift
+fi
+
+task="$*"
+case "$lane" in
+  auto|fast|normal|complex|frontier|security) ;;
+  *) echo "Invalid lane: $lane" >&2; exit 64 ;;
+esac
+[[ -n "$task" ]] || { usage >&2; exit 64; }
+repo="$(cd -- "$repo" && pwd -P)"
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+flow_bin="${HERMES_DEEP_WORK_FLOW:-$SCRIPT_DIR/hermes-coder-flow}"
+if [[ "$flow_bin" != */* ]]; then
+  flow_bin="$(command -v "$flow_bin" || true)"
+fi
+[[ -n "$flow_bin" && "$flow_bin" == /* && -x "$flow_bin" ]] || {
+  echo "hermes-deep-work: hermes-coder-flow is missing or not executable" >&2
+  exit 70
+}
+
+cmd=("$flow_bin" --source "$repo" --lane "$lane")
+if [[ "$dry_run" == true ]]; then
+  cmd+=(--dry-run)
+fi
+cmd+=("$task")
+exec "${cmd[@]}"

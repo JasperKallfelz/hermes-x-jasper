@@ -8,15 +8,27 @@ This repo is *not* Hermes Agent. Before you open a PR here, check:
 
 - **A bug in the agent, the gateway, a tool, a platform adapter?** → report it upstream at [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Not here.
 - **A bug in the installer, the patch, the example config, or the helper scripts?** → right place, carry on.
-- **A feature the patch adds** (Discord voice, auto-CDP browser, voice jobs)? → here for now. If it is genuinely useful to everyone, the better home is an upstream PR — and we would rather delete a patch hunk than carry it forever.
+- **A feature the patch adds** (auto-CDP launch, internal TTS persona overrides, Telegram location-keyboard cleanup)? → here for now. If it is genuinely useful to everyone, the better home is an upstream PR — and we would rather delete a patch hunk than carry it forever.
+- **The experimental Pi RPC runtime?** → changes belong in
+  `modules/pi-runtime/` and must preserve its separate-installation boundary.
+  Do not fold it into the stable v0.20.6 patch or touch `coder-stack/` as part
+  of a Pi-only change.
 
 ## Before you open a PR
 
 ```bash
 make verify
+make release-audit
 ```
 
-That runs everything CI runs: `bash -n` + required shellcheck, `compileall`, the required pytest + PyYAML test suite, the leak audit, the required gitleaks 8.30.1 secret-scan gate (current tree + full history), and `git apply --check --whitespace=error-all` of the patch against a *fresh* clone of the pinned upstream commit (needs network). Missing verifier dependencies fail closed. If `make verify` is green, CI will be too.
+That runs the local model-free gates: `bash -n` + required shellcheck,
+`compileall`, pytest + PyYAML, the leak audit, pinned Gitleaks 8.30.1
+current-tree/full-history scans, and plain-apply proof of the stable patch.
+Module-focused tests also bind the Pi manifest, scripts, docs, path classifier,
+and CI aggregation contract. GitHub's required Pi workflow adds the 1,419-case
+release suite, desktop tests/typecheck/build, exact Windows drive-letter test,
+and native ARM64 two-build plus 5/5 Docker E2E gates. An unavailable or skipped
+required Pi job is not green.
 
 ## The rules that actually matter
 
@@ -24,12 +36,12 @@ That runs everything CI runs: `bash -n` + required shellcheck, `compileall`, the
 
 No names, emails, absolute home paths (`/Users/...`, `/home/...`), bot tokens, provider API credentials, numeric Discord or Telegram IDs, or chat logs. Not in code, not in the patch, not in a comment, not in a commit message.
 
-`make audit` (the custom scanner) **and** `make gitleaks` (current tree + full
-history) both enforce this and run in CI. The scanner's own test vectors are
+`make release-audit` is the authoritative fail-closed gate; its custom scanner
+and pinned Gitleaks tree/history passes both run in CI. The scanner's own test vectors are
 assembled at runtime so no static secret ever lands in the tree; the only
 historical exceptions are narrow, rule-bound, commit+path-scoped gitleaks
 allowlists for a fixed set of old commits — never a blanket test-directory or
-global allowlist (see `.gitleaks.toml`). Placeholders are what you want instead:
+global allowlist (see `.gitleaks.toml` and `security/audit-exceptions.json`). Placeholders are what you want instead:
 
 - `user@example.com`, `<YOUR_TOKEN>`, `~/hermes-agent`, empty `KEY=` values
 - Real names of technologies and vendors (Discord, Edge TTS, Parakeet) are fine — those are not personal data.
@@ -46,19 +58,46 @@ Anything that touches `~/.hermes/config.yaml` or `.env` must: check whether the 
 
 Every step checks its own end state first, and every mutation goes through `run()` so `--dry-run` stays honest. Re-running the installer must be a no-op, not a second install.
 
+**5. Pi stays isolated and unauthenticated by automation.**
+
+The module manifest must continue to lock base
+`306db2776c6b6f1acc85c31c4dabba3263f0e9fd`, feature
+`c1093d23837bab98013bc9929d0d2679416601e5`, Pi 0.84.3, and image
+`sha256:e89f45110e9277902bafbf49009e842bc9e38180e668fea8a6ff3dcdb2dd2cdf`
+unless a new independently reviewed evidence set replaces the whole tuple.
+Setup may use only exact objects and plain apply. It must never edit live
+config, install globally, run Docker, start a process, or authenticate. Pi OAuth
+is a trusted-local manual flow; the expired OAuth means authenticated E2E is a
+documented gap. No credentials or auth state belong in tests or fixtures.
+
+Any Pi module script, manifest, patch, test, workflow, evidence, or classifier
+change must classify as Pi-sensitive. The aggregate `check` must fail if the
+required Pi workflow fails, is cancelled, or is unexpectedly skipped.
+
 ## Changing the patch
 
-`patches/voice-and-desktop-features.patch` is a plain `git diff` against the pinned commit. To regenerate it:
+`patches/voice-and-desktop-features.patch` is a plain, full-index `git diff`
+against the pinned commit. Generate it only from a dedicated detached checkout:
 
 ```bash
-cd ~/hermes-agent                       # your patched checkout
-git diff > ~/hermes-x-jasper/patches/voice-and-desktop-features.patch
+scripts/regenerate_patch.sh /absolute/path/to/dedicated-patched-checkout
 cd ~/hermes-x-jasper && make verify
 ```
 
-Then read your own diff before you commit it. A patch generated from a working tree picks up whatever else is in that tree — that is exactly how a home path or a bot token gets published.
+The regeneration helper stages only `patches/voice-and-desktop-features.paths`, fails unless the cached set equals that allowlist exactly, and always unstages it. It never uses `git add -A`. Read the resulting diff before committing it.
 
-If you bump the pinned commit, update it in **all** of: `setup.sh`, `verify.sh`, `.github/workflows/ci.yml`, `tests/test_setup.py`, and `README.md`. `make verify` will catch you if you miss one.
+Before creating a commit, configure this repository to use the public GitHub noreply identity:
+
+```bash
+git config user.email 72349064+JasperKallfelz@users.noreply.github.com
+```
+
+The release audit scans author/committer names, emails, and messages, so a personal address fails before a tag can be published.
+
+If you bump the pinned commit, update the release tuple in every source listed
+by `tests/test_release_baseline.py` (installer, verifier, CI, AGENTS, README,
+security/troubleshooting docs, config comments, and tests). `make verify` will
+catch a stale current-baseline reference.
 
 ## Style
 

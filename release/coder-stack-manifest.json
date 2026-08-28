@@ -1,0 +1,101 @@
+{
+  "files": {
+    ".github/workflows/ci.yml": {
+      "mode": "100644",
+      "sha256": "f672c25747fc1ff478350455063f40171c739b8918725af549c0718a0906dc05"
+    },
+    ".gitignore": {
+      "mode": "100644",
+      "sha256": "890a03061bab8dbcd0f8462fa33684371516906db98edd20fe908c582b07a7aa"
+    },
+    ".hermes-gates.json": {
+      "mode": "100644",
+      "sha256": "b5510e11b53e7d39617bb0732ef4883fa933e96f0873b20e2b6708925d36a46b"
+    },
+    "README.md": {
+      "mode": "100644",
+      "sha256": "fc4f874dc6fb120c058d8b27107bafecf110b985f1713687842581bdd5f5a137"
+    },
+    "bin/hermes-coder": {
+      "mode": "100755",
+      "sha256": "9543b870e0cabd5c1722cd2f58ef3bc1d3b4822e794bc182481610ed649c7da7"
+    },
+    "bin/hermes-coder-flow": {
+      "mode": "100755",
+      "sha256": "25e319b4e4a2d9805fe9016dc3e749a4f84be68bf0931bee88398c0c22c32ff9"
+    },
+    "bin/hermes-deep-work": {
+      "mode": "100755",
+      "sha256": "3adaea0567539cd7ea76fa79af43da2c3d36d9a4d68b2671eb05b1656f6b6679"
+    },
+    "docs/hermes-coder-flow.md": {
+      "mode": "100644",
+      "sha256": "158fb549c80844714bf4cd7229e3e0cc50799e6a8461e0b8eaa72ddac28ce8a4"
+    },
+    "docs/phase-a-plan.md": {
+      "mode": "100644",
+      "sha256": "fed8ccb8710b4b55d6d51c40098edea4ffb16264ccec03579f052068c8e6f096"
+    },
+    "docs/reliability-and-gates.md": {
+      "mode": "100644",
+      "sha256": "9c20fcf1ccd50b9f0a0b13c8a5eb5563731c4dd3aa115ffc8e1840bf14022629"
+    },
+    "tests/__init__.py": {
+      "mode": "100644",
+      "sha256": "3728b1e6b5ce1abbdf80f6cb36a9907474592908b18117f4ef1ab5e0cfb25111"
+    },
+    "tests/test_hermes_coder.py": {
+      "mode": "100644",
+      "sha256": "041562bf7f32b00b229c39dcbe6438ad54271289a3e04af760d164961d0ab57b"
+    },
+    "tests/test_hermes_coder_flow.py": {
+      "mode": "100644",
+      "sha256": "36b7ba9ce7bfa4686df4b47cf11d1c5da878177f06b96e4f66e7bad74aa5d948"
+    },
+    "tests/test_security_hardening.py": {
+      "mode": "100644",
+      "sha256": "807a917c058922cb38c4c2a83c54090b47cdb88776d18e29381dcf75e77f159e"
+    },
+    "tests/test_wrappers.py": {
+      "mode": "100644",
+      "sha256": "e51de9cf2b9e662ebcf7135da492605c818b05f58e4e1cefbf78edeebb10a690"
+    },
+    "tools/deep-chat/Makefile": {
+      "mode": "100644",
+      "sha256": "cb0544239558032fd0d94d1945fc7594147ea26d39a87a0590e5923267fa770b"
+    },
+    "tools/deep-chat/README.md": {
+      "mode": "100644",
+      "sha256": "b741f83dbf335aaee5b09bcf7cadb55794ce6e6767523eab213d739043200bc1"
+    },
+    "tools/deep-chat/claude_worker.py": {
+      "mode": "100755",
+      "sha256": "081279c58c700b121eb0b3d64b9e2ff0a645f73c70c749b734b7d589f2e03272"
+    },
+    "tools/deep-chat/deep_chat_bridge.py": {
+      "mode": "100755",
+      "sha256": "6639baf31bf18a0d4d1d06788d978a5781d0a25109b2279d380352bdf828b5e6"
+    },
+    "tools/deep-chat/hermes-deep-chat": {
+      "mode": "100755",
+      "sha256": "1a3858ea18f50274b7c4633ce5cc8afe7e675c7763d4e81e32262d61221c6830"
+    },
+    "tools/deep-chat/install-local.sh": {
+      "mode": "100755",
+      "sha256": "592ae08a2446c9aaaab0fc5a7eb697776d69b5ea945780b4da1d4edac7f6dfc8"
+    },
+    "tools/deep-chat/secure_runtime.py": {
+      "mode": "100755",
+      "sha256": "cba179d46924fa2851f27184a04583cc3a9bf984aea6cf2ad0bdd0dcd7ec50e1"
+    },
+    "tools/deep-chat/tests/test_deep_chat.sh": {
+      "mode": "100755",
+      "sha256": "1c349c133785240d44e435410cd78ef066496c276046728bbdb84266bff9babb"
+    }
+  },
+  "license": "MIT",
+  "schema_version": 1,
+  "source_commit": "c7fe0ad0d15b26e08635dcac6dfa446a61f0c4fc",
+  "source_repository": "https://github.com/JasperKallfelz/hermes-coder-stack",
+  "source_tree": "51898a27073ff2b58e52ff0533baa9817edfcee2"
+}

@@ -1,8 +1,8 @@
 diff --git a/hermes_cli/browser_connect.py b/hermes_cli/browser_connect.py
-index 4fcc4cc63c5f32d33f39e38b343a962f2e56c95c..93f0260c73efd5e7dd3702c4d420f756429f9638 100644
+index 5db489206a012131a4b2d0917b9ac970c2445abc..9db58ad61da32629402447ee9e8f97cd516201c1 100644
 --- a/hermes_cli/browser_connect.py
 +++ b/hermes_cli/browser_connect.py
-@@ -131,6 +131,7 @@ def chrome_debug_data_dir() -> str:
+@@ -991,6 +991,7 @@ def chrome_debug_data_dir() -> str:
  
  def _chrome_debug_args(port: int) -> list[str]:
      return [
@@ -10,7 +10,7 @@ index 4fcc4cc63c5f32d33f39e38b343a962f2e56c95c..93f0260c73efd5e7dd3702c4d420f756
          f"--remote-debugging-port={port}",
          f"--user-data-dir={chrome_debug_data_dir()}",
          "--no-first-run",
-@@ -254,7 +255,7 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
+@@ -1114,7 +1115,7 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
      if system == "Darwin":
          data_dir = chrome_debug_data_dir()
          return (
@@ -19,37 +19,28 @@ index 4fcc4cc63c5f32d33f39e38b343a962f2e56c95c..93f0260c73efd5e7dd3702c4d420f756
              f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
          )
  
-diff --git a/hermes_cli/config.py b/hermes_cli/config.py
-index 947fddabf41570f3f4f6456cdb55c6166da53066..dfa69e9ca9610c802c912268080e17626b48368b 100644
---- a/hermes_cli/config.py
-+++ b/hermes_cli/config.py
-@@ -1315,6 +1315,7 @@ DEFAULT_CONFIG = {
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index c9bf9ad6e2ad054461a959e86bfc028467ce9975..2b23ac162355bc867768e3d63fc430a971753f1e 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -575,6 +575,7 @@ DEFAULT_CONFIG = {
          "engine": "auto",
          "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
          "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
 +        "auto_launch_local_cdp": False,  # Opt in to launching Hermes-managed Chrome when a loopback cdp_url is down
-         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
-         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
-         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
+         # Consent to browse with the user's REAL logins for local browsing.
+         # When true, local browsing (the Browser Use CLI, or the built-in
+         # browser tools) runs on a Hermes-managed SNAPSHOT of the user's
 diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
-index d91f2a799828b728bcd36655f71c98f3bc248262..8179652a6f5a2c1783b6133deeb52f996c35244c 100644
+index 11259b6db09afef1f3e0f6c4a87ce004bd731a98..e4fce5269a963be75cfb5bd2d1d1be377af4e55f 100644
 --- a/plugins/platforms/telegram/adapter.py
 +++ b/plugins/platforms/telegram/adapter.py
-@@ -8164,6 +8164,66 @@ class TelegramAdapter(BasePlatformAdapter):
-         event = self._apply_telegram_group_observe_attribution(event)
+@@ -9725,6 +9725,62 @@ class TelegramAdapter(BasePlatformAdapter):
+             return
          await self.handle_message(event)
  
 +    async def _remove_location_request_keyboard(self, msg: Any) -> None:
-+        """Clear any persistent Telegram reply keyboard after a location share.
-+
-+        Telegram's request-location buttons are reply keyboards: they stay
-+        pinned at the bottom of the client until the bot sends a
-+        ReplyKeyboardRemove.  Once a location/venue update arrives the
-+        coordinates are already in hand, so clear that UI immediately (via a
-+        short-lived control message) instead of waiting for the agent's
-+        eventual reply, which may take tool calls and otherwise leaves a stale
-+        "share location" button on screen.
-+        """
++        """Clear Telegram's persistent reply keyboard after a location share."""
 +        bot = self._bot
 +        if not bot:
 +            return
@@ -74,23 +65,28 @@ index d91f2a799828b728bcd36655f71c98f3bc248262..8179652a6f5a2c1783b6133deeb52f99
 +        try:
 +            sent = await bot.send_message(**kwargs)
 +        except Exception as first_err:
-+            # Some forum/private-topic sends reject message_thread_id for
-+            # control messages.  Keyboard removal is chat-scoped, so retry
-+            # once without it.
++            # Keyboard removal is chat-scoped. Some topic sends reject the
++            # thread identifier, so retry the short control message once.
 +            if "message_thread_id" not in kwargs:
-+                logger.debug("[Telegram] Failed to remove location keyboard: %s", first_err)
++                logger.debug(
++                    "[Telegram] Failed to remove location keyboard: %s", first_err
++                )
 +                return
 +            kwargs.pop("message_thread_id", None)
 +            try:
 +                sent = await bot.send_message(**kwargs)
 +            except Exception as second_err:
-+                logger.debug("[Telegram] Failed to remove location keyboard: %s", second_err)
++                logger.debug(
++                    "[Telegram] Failed to remove location keyboard: %s", second_err
++                )
 +                return
 +
 +        async def _delete_notice() -> None:
 +            await asyncio.sleep(3)
 +            try:
-+                await bot.delete_message(chat_id=int(chat_id), message_id=sent.message_id)
++                await bot.delete_message(
++                    chat_id=int(chat_id), message_id=sent.message_id
++                )
 +            except Exception:
 +                pass
 +
@@ -102,7 +98,7 @@ index d91f2a799828b728bcd36655f71c98f3bc248262..8179652a6f5a2c1783b6133deeb52f99
      async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
          """Handle incoming location/venue pin messages."""
          msg = self._effective_update_message(update)
-@@ -8192,6 +8252,8 @@ class TelegramAdapter(BasePlatformAdapter):
+@@ -9753,6 +9809,8 @@ class TelegramAdapter(BasePlatformAdapter):
          if lat is None or lon is None:
              return
  
@@ -112,77 +108,534 @@ index d91f2a799828b728bcd36655f71c98f3bc248262..8179652a6f5a2c1783b6133deeb52f99
          parts = ["[The user shared a location pin.]"]
          if venue:
 diff --git a/tests/cli/test_cli_browser_connect.py b/tests/cli/test_cli_browser_connect.py
-index ef3a703db4834a95034a0cb9273554da3f96ab8c..bffea7df8cfb5a5388e32c886b09a5ba3a62b58d 100644
+index 4bdc56cbcf5f1daf126e547dc4d08d9d521de059..5f83925f23b37f4493466f705f9b54bda388770c 100644
 --- a/tests/cli/test_cli_browser_connect.py
 +++ b/tests/cli/test_cli_browser_connect.py
-@@ -109,7 +109,7 @@ class TestChromeDebugLaunch:
+@@ -20,6 +20,7 @@ from hermes_cli.browser_connect import (
+ def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
+     """Verify the auto-launch command has all required flags."""
+     assert cmd[0] == expected_chrome
++    assert "--remote-debugging-address=127.0.0.1" in cmd
+     assert f"--remote-debugging-port={expected_port}" in cmd
+     assert "--no-first-run" in cmd
+     assert "--no-default-browser-check" in cmd
+@@ -65,7 +66,10 @@ class TestChromeDebugLaunch:
              command = manual_chrome_debug_command(9222, "Linux")
  
          assert command is not None
 -        assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
-+        assert command.startswith("/usr/bin/chromium --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222")
++        assert command.startswith(
++            "/usr/bin/chromium --remote-debugging-address=127.0.0.1 "
++            "--remote-debugging-port=9222"
++        )
  
-     def test_linux_candidates_prefer_chrome_before_brave_when_both_exist(self):
-         chrome = "/usr/bin/google-chrome"
-@@ -125,7 +125,7 @@ class TestChromeDebugLaunch:
  
-         assert candidates[:2] == [chrome, brave]
-         assert command is not None
--        assert command.startswith(f"{chrome} --remote-debugging-port=9222")
-+        assert command.startswith(f"{chrome} --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222")
  
-     def test_linux_candidates_prefer_chrome_install_path_before_brave_on_path(self):
-         chrome = "/opt/google/chrome/chrome"
-@@ -162,7 +162,7 @@ class TestChromeDebugLaunch:
- 
-         assert candidates == [brave]
-         assert command is not None
--        assert command.startswith(f"{brave} --remote-debugging-port=9222")
-+        assert command.startswith(f"{brave} --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222")
- 
-     def test_linux_candidates_include_brave_binary_name(self):
-         brave = "/usr/bin/brave"
-@@ -174,7 +174,7 @@ class TestChromeDebugLaunch:
- 
-         assert candidates == [brave]
-         assert command is not None
--        assert command.startswith(f"{brave} --remote-debugging-port=9222")
-+        assert command.startswith(f"{brave} --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222")
- 
-     def test_linux_candidates_include_official_brave_and_edge_stable_paths(self):
-         brave = "/usr/bin/brave-browser-stable"
-@@ -312,7 +312,7 @@ class TestChromeDebugLaunch:
+@@ -158,7 +162,10 @@ class TestChromeDebugLaunch:
  
          assert command is not None
          # Linux/WSL uses POSIX shell quoting (single quotes around paths with spaces).
 -        assert command.startswith(f"'{chrome}' --remote-debugging-port=9222")
-+        assert command.startswith(f"'{chrome}' --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222")
++        assert command.startswith(
++            f"'{chrome}' --remote-debugging-address=127.0.0.1 "
++            "--remote-debugging-port=9222"
++        )
  
      def test_manual_command_uses_windows_quoting_on_windows(self):
          chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-@@ -323,7 +323,7 @@ class TestChromeDebugLaunch:
+@@ -169,7 +176,10 @@ class TestChromeDebugLaunch:
  
          assert command is not None
          # Windows uses cmd.exe-compatible quoting via subprocess.list2cmdline.
 -        assert command.startswith(f'"{chrome}" --remote-debugging-port=9222')
-+        assert command.startswith(f'"{chrome}" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222')
++        assert command.startswith(
++            f'"{chrome}" --remote-debugging-address=127.0.0.1 '
++            "--remote-debugging-port=9222"
++        )
          assert "'" not in command
  
-     def test_manual_command_returns_none_when_linux_browser_missing(self):
+ 
+diff --git a/tests/gateway/test_telegram_location_keyboard_cleanup.py b/tests/gateway/test_telegram_location_keyboard_cleanup.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..13c315a07615dabcde8dbe954b3beec1f29d88f0
+--- /dev/null
++++ b/tests/gateway/test_telegram_location_keyboard_cleanup.py
+@@ -0,0 +1,165 @@
++"""Telegram reply-keyboard cleanup after a location share."""
++
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock
++
++from gateway.config import PlatformConfig
++from plugins.platforms.telegram.adapter import TelegramAdapter
++
++
++def _make_adapter():
++    return TelegramAdapter(PlatformConfig(enabled=True, token="placeholder", extra={}))
++
++
++def _make_bot(send_side_effect=None):
++    bot = MagicMock()
++    sent = SimpleNamespace(message_id=555)
++    bot.send_message = AsyncMock(return_value=sent, side_effect=send_side_effect)
++    bot.delete_message = AsyncMock()
++    return bot, sent
++
++
++def test_location_share_sends_reply_keyboard_remove():
++    from telegram import ReplyKeyboardRemove
++
++    adapter = _make_adapter()
++    bot, _sent = _make_bot()
++    adapter._bot = bot
++    message = SimpleNamespace(chat_id=111, message_thread_id=None)
++
++    asyncio.run(adapter._remove_location_request_keyboard(message))
++
++    kwargs = bot.send_message.await_args.kwargs
++    assert kwargs["chat_id"] == 111
++    assert kwargs["text"] == "📍 Location received."
++    if isinstance(ReplyKeyboardRemove, type):
++        assert isinstance(kwargs["reply_markup"], ReplyKeyboardRemove)
++    else:
++        assert kwargs["reply_markup"] is ReplyKeyboardRemove.return_value
++    assert "message_thread_id" not in kwargs
++
++
++def test_cleanup_notice_is_deleted(monkeypatch):
++    adapter = _make_adapter()
++    bot, sent = _make_bot()
++    adapter._bot = bot
++    message = SimpleNamespace(chat_id=111, message_thread_id=None)
++    tasks = []
++    real_create_task = asyncio.create_task
++
++    async def instant_sleep(_delay):
++        return None
++
++    def capture_task(coro):
++        task = real_create_task(coro)
++        tasks.append(task)
++        return task
++
++    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
++    monkeypatch.setattr(asyncio, "create_task", capture_task)
++
++    async def run():
++        await adapter._remove_location_request_keyboard(message)
++        await tasks[0]
++
++    asyncio.run(run())
++
++    bot.delete_message.assert_awaited_once_with(
++        chat_id=111, message_id=sent.message_id
++    )
++
++
++def test_thread_send_failure_retries_without_thread_id():
++    adapter = _make_adapter()
++    bot, sent = _make_bot()
++    bot.send_message.side_effect = [RuntimeError("thread unavailable"), sent]
++    adapter._bot = bot
++    message = SimpleNamespace(chat_id=111, message_thread_id=7)
++
++    asyncio.run(adapter._remove_location_request_keyboard(message))
++
++    first, second = bot.send_message.await_args_list
++    assert first.kwargs["message_thread_id"] == 7
++    assert "message_thread_id" not in second.kwargs
++
++
++def test_missing_bot_or_chat_id_is_a_noop():
++    adapter = _make_adapter()
++    adapter._bot = None
++    asyncio.run(
++        adapter._remove_location_request_keyboard(SimpleNamespace(chat_id=111))
++    )
++
++    bot, _sent = _make_bot()
++    adapter._bot = bot
++    asyncio.run(
++        adapter._remove_location_request_keyboard(SimpleNamespace(chat_id=None))
++    )
++    bot.send_message.assert_not_awaited()
++
++
++def _location_update(message):
++    return SimpleNamespace(
++        effective_message=message, message=message, update_id=1
++    )
++
++
++def _wire_location_flow(adapter, monkeypatch):
++    cleaned = []
++    handled = []
++    monkeypatch.setattr(
++        adapter, "_is_user_authorized_from_message", lambda _message: True
++    )
++    monkeypatch.setattr(adapter, "_should_process_message", lambda _message: True)
++
++    async def record_cleanup(message):
++        cleaned.append(message)
++
++    async def record_handle(event):
++        handled.append(event)
++
++    monkeypatch.setattr(adapter, "_remove_location_request_keyboard", record_cleanup)
++    monkeypatch.setattr(
++        adapter,
++        "_build_message_event",
++        lambda *_args, **_kwargs: SimpleNamespace(text=""),
++    )
++    monkeypatch.setattr(
++        adapter, "_apply_telegram_group_observe_attribution", lambda event: event
++    )
++    monkeypatch.setattr(adapter, "handle_message", record_handle)
++    return cleaned, handled
++
++
++def test_location_dispatch_cleans_keyboard_first(monkeypatch):
++    adapter = _make_adapter()
++    cleaned, handled = _wire_location_flow(adapter, monkeypatch)
++    message = SimpleNamespace(
++        chat_id=111,
++        message_thread_id=None,
++        venue=None,
++        location=SimpleNamespace(latitude=52.52, longitude=13.405),
++    )
++
++    asyncio.run(adapter._handle_location_message(_location_update(message), None))
++
++    assert cleaned == [message]
++    assert len(handled) == 1
++    assert "52.52" in handled[0].text
++
++
++def test_update_without_coordinates_keeps_keyboard(monkeypatch):
++    adapter = _make_adapter()
++    cleaned, handled = _wire_location_flow(adapter, monkeypatch)
++    message = SimpleNamespace(
++        chat_id=111,
++        message_thread_id=None,
++        venue=None,
++        location=SimpleNamespace(latitude=None, longitude=13.405),
++    )
++
++    asyncio.run(adapter._handle_location_message(_location_update(message), None))
++
++    assert cleaned == []
++    assert handled == []
+diff --git a/tests/hermes_cli/test_browser_connect_loopback_binding.py b/tests/hermes_cli/test_browser_connect_loopback_binding.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..40334d1a8a552c9205bde54230a0a615ecbcab18
+--- /dev/null
++++ b/tests/hermes_cli/test_browser_connect_loopback_binding.py
+@@ -0,0 +1,36 @@
++"""Hermes-managed Chrome must expose DevTools on loopback only."""
++
++from unittest.mock import patch
++
++
++def test_debug_launch_args_pin_devtools_to_loopback():
++    from hermes_cli.browser_connect import _chrome_debug_args
++
++    args = _chrome_debug_args(9222)
++    assert "--remote-debugging-address=127.0.0.1" in args
++    assert "--remote-debugging-port=9222" in args
++
++
++def test_manual_command_with_detected_binary_pins_loopback():
++    from hermes_cli.browser_connect import manual_chrome_debug_command
++
++    with patch(
++        "hermes_cli.browser_connect.get_chrome_debug_candidates",
++        return_value=["/usr/bin/chromium"],
++    ):
++        command = manual_chrome_debug_command(9222, system="Linux")
++
++    assert command is not None
++    assert "--remote-debugging-address=127.0.0.1" in command
++
++
++def test_manual_command_darwin_fallback_pins_loopback():
++    from hermes_cli.browser_connect import manual_chrome_debug_command
++
++    with patch(
++        "hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]
++    ):
++        command = manual_chrome_debug_command(9222, system="Darwin")
++
++    assert command is not None
++    assert "--remote-debugging-address=127.0.0.1" in command
+diff --git a/tests/tools/test_browser_auto_cdp.py b/tests/tools/test_browser_auto_cdp.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0ff5d0300c5bb878c7ba8638e431af7d387516b
+--- /dev/null
++++ b/tests/tools/test_browser_auto_cdp.py
+@@ -0,0 +1,127 @@
++"""Opt-in auto-launch for configured loopback CDP endpoints."""
++
++from unittest.mock import patch
++
++
++LOCAL_URL = "http://127.0.0.1:9222"
++REMOTE_URL = "http://198.51.100.7:9222"
++RESOLVED_WS = "ws://127.0.0.1:9222/devtools/browser/example"
++
++
++def test_config_controls_auto_cdp(monkeypatch):
++    from tools.browser_tool import _auto_launch_local_cdp_enabled
++
++    monkeypatch.delenv("BROWSER_TOOL_AUTO_CDP", raising=False)
++    with patch(
++        "hermes_cli.config.read_raw_config",
++        return_value={"browser": {"auto_launch_local_cdp": True}},
++    ):
++        assert _auto_launch_local_cdp_enabled() is True
++    with patch(
++        "hermes_cli.config.read_raw_config",
++        return_value={"browser": {"auto_launch_local_cdp": False}},
++    ):
++        assert _auto_launch_local_cdp_enabled() is False
++
++
++def test_explicit_environment_override_has_precedence(monkeypatch):
++    from tools.browser_tool import _auto_launch_local_cdp_enabled
++
++    with patch(
++        "hermes_cli.config.read_raw_config",
++        return_value={"browser": {"auto_launch_local_cdp": True}},
++    ) as read_config:
++        monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "0")
++        assert _auto_launch_local_cdp_enabled() is False
++        monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
++        assert _auto_launch_local_cdp_enabled() is True
++    read_config.assert_not_called()
++
++
++def test_remote_endpoint_never_triggers_local_launch(monkeypatch):
++    from tools.browser_tool import _ensure_local_cdp_ready
++
++    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
++    with patch("hermes_cli.browser_connect.try_launch_chrome_debug") as launch:
++        assert _ensure_local_cdp_ready(REMOTE_URL) == REMOTE_URL
++    launch.assert_not_called()
++
++
++def test_reachable_loopback_endpoint_is_left_alone(monkeypatch):
++    from tools.browser_tool import _ensure_local_cdp_ready
++
++    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
++    with patch(
++        "hermes_cli.browser_connect.is_browser_debug_ready", return_value=True
++    ), patch("hermes_cli.browser_connect.try_launch_chrome_debug") as launch:
++        assert _ensure_local_cdp_ready(LOCAL_URL) == LOCAL_URL
++    launch.assert_not_called()
++
++
++def test_missing_loopback_endpoint_launches_waits_and_resolves(monkeypatch):
++    from tools.browser_tool import _ensure_local_cdp_ready
++
++    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
++    with patch(
++        "hermes_cli.browser_connect.is_browser_debug_ready",
++        side_effect=[False, True],
++    ), patch(
++        "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
++    ) as launch, patch(
++        "tools.browser_tool._resolve_cdp_override", return_value=RESOLVED_WS
++    ) as resolve:
++        assert _ensure_local_cdp_ready(LOCAL_URL) == RESOLVED_WS
++
++    launch.assert_called_once_with(9222)
++    resolve.assert_called_once_with(LOCAL_URL)
++
++
++def test_failed_launch_returns_original_endpoint(monkeypatch):
++    from tools.browser_tool import _ensure_local_cdp_ready
++
++    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
++    with patch(
++        "hermes_cli.browser_connect.is_browser_debug_ready", return_value=False
++    ), patch(
++        "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
++    ):
++        assert _ensure_local_cdp_ready(LOCAL_URL) == LOCAL_URL
++
++
++def test_session_creation_auto_launches_before_endpoint_resolution(monkeypatch):
++    import tools.browser_tool as browser
++
++    task_id = "test-auto-cdp-wiring"
++    calls = {}
++    monkeypatch.setattr(browser, "_start_browser_cleanup_thread", lambda: None)
++    monkeypatch.setattr(browser, "_update_session_activity", lambda _task: None)
++    monkeypatch.setattr(browser, "_ensure_cdp_supervisor", lambda _task: None)
++    monkeypatch.setattr(browser, "_get_cdp_override_raw", lambda: LOCAL_URL)
++
++    def ensure(url):
++        calls["ensured"] = url
++        return RESOLVED_WS
++
++    def resolve(url):
++        calls["resolved"] = url
++        return url
++
++    def create(tid, url):
++        calls["created"] = url
++        return {"session_id": tid, "cdp_url": url, "provider": "cdp"}
++
++    monkeypatch.setattr(browser, "_ensure_local_cdp_ready", ensure)
++    monkeypatch.setattr(browser, "_resolve_cdp_override", resolve)
++    monkeypatch.setattr(browser, "_create_cdp_session", create)
++
++    try:
++        info = browser._get_session_info(task_id)
++    finally:
++        browser._active_sessions.pop(task_id, None)
++
++    assert calls == {
++        "ensured": LOCAL_URL,
++        "resolved": RESOLVED_WS,
++        "created": RESOLVED_WS,
++    }
++    assert info["cdp_url"] == RESOLVED_WS
+diff --git a/tests/tools/test_tts_runtime_overrides.py b/tests/tools/test_tts_runtime_overrides.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..301ec2664d173b2009f38971843ed4d46b8acc65
+--- /dev/null
++++ b/tests/tools/test_tts_runtime_overrides.py
+@@ -0,0 +1,116 @@
++"""Internal per-call TTS overrides for transport speaker personas."""
++
++import json
++
++
++def test_runtime_overrides_are_provider_scoped_without_mutating_config():
++    from tools.tts_tool import _apply_runtime_tts_overrides
++
++    original = {
++        "provider": "openai",
++        "voice": "global-old",
++        "edge": {"voice": "edge-old", "speed": 1.0},
++    }
++    resolved = _apply_runtime_tts_overrides(
++        original,
++        provider="edge",
++        voice="en-US-AriaNeural",
++        model="edge-persona-model",
++        speed=1.15,
++    )
++
++    assert original == {
++        "provider": "openai",
++        "voice": "global-old",
++        "edge": {"voice": "edge-old", "speed": 1.0},
++    }
++    assert resolved["provider"] == "edge"
++    assert resolved["voice"] == "en-US-AriaNeural"
++    assert resolved["model"] == "edge-persona-model"
++    assert resolved["speed"] == 1.15
++    assert resolved["edge"] == {
++        "voice": "en-US-AriaNeural",
++        "voice_id": "en-US-AriaNeural",
++        "model": "edge-persona-model",
++        "model_id": "edge-persona-model",
++        "speed": 1.15,
++    }
++
++
++def test_named_provider_block_receives_runtime_values():
++    from tools.tts_tool import _apply_runtime_tts_overrides
++
++    original = {
++        "provider": "speaker",
++        "providers": {"speaker": {"type": "command", "voice": "old"}},
++    }
++    resolved = _apply_runtime_tts_overrides(original, voice="new")
++
++    assert original["providers"]["speaker"] == {
++        "type": "command",
++        "voice": "old",
++    }
++    assert resolved["providers"]["speaker"]["voice"] == "new"
++    assert resolved["providers"]["speaker"]["type"] == "command"
++
++
++def test_internal_overrides_reach_the_selected_generator(monkeypatch, tmp_path):
++    import tools.tts_tool as tts
++
++    captured = {}
++    output_path = tmp_path / "voice.mp3"
++    monkeypatch.setattr(
++        tts,
++        "_load_tts_config",
++        lambda: {"provider": "minimax", "openai": {"voice": "alloy"}},
++    )
++    monkeypatch.setattr(tts, "_import_openai_client", lambda: None)
++
++    def generate(_text, path, config, **_kwargs):
++        captured["config"] = config
++        with open(path, "wb") as audio:
++            audio.write(b"audio")
++        return path
++
++    monkeypatch.setattr(tts, "_generate_openai_tts", generate)
++    result = json.loads(
++        tts.text_to_speech_tool(
++            "hello",
++            output_path=str(output_path),
++            provider_override="openai",
++            voice_override="nova",
++            model_override="persona-model",
++            speed_override=1.25,
++        )
++    )
++
++    assert result["success"] is True
++    config = captured["config"]
++    assert config["provider"] == "openai"
++    assert config["openai"]["voice"] == "nova"
++    assert config["openai"]["voice_id"] == "nova"
++    assert config["openai"]["model"] == "persona-model"
++    assert config["openai"]["model_id"] == "persona-model"
++    assert config["openai"]["speed"] == 1.25
++
++
++def test_upstream_public_arguments_remain_available():
++    """v0.20.6 owns model-facing provider/speed; the patch must preserve it."""
++    from tools.tts_tool import TTS_SCHEMA
++
++    properties = TTS_SCHEMA["parameters"]["properties"]
++    assert "provider" in properties
++    assert "speed" in properties
++
++
++def test_internal_override_names_are_not_model_facing():
++    from tools.tts_tool import TTS_SCHEMA
++
++    properties = TTS_SCHEMA["parameters"]["properties"]
++    for name in (
++        "provider_override",
++        "voice_override",
++        "model_override",
++        "speed_override",
++    ):
++        assert name not in properties
 diff --git a/tools/browser_tool.py b/tools/browser_tool.py
-index bcc1455d7831c4a04e726d0aa95e732164aee4e9..a2f367d5095de4d5864af0411f39fe1ff6107b63 100644
+index 8630eed4032a7d6262fd95e5e8d816aac2e90671..5cd720e5bf8ceeca6f9fede72d9bde9f0996ab7b 100644
 --- a/tools/browser_tool.py
 +++ b/tools/browser_tool.py
-@@ -485,6 +485,95 @@ def _get_cdp_override() -> str:
-     return ""
+@@ -603,6 +603,92 @@ def _get_cdp_override() -> str:
+     return _resolve_cdp_override(raw)
  
  
 +def _auto_launch_local_cdp_enabled() -> bool:
-+    """Whether to auto-launch a local debug Chrome when a loopback ``cdp_url``
-+    is configured but not yet listening.
++    """Return whether a configured loopback CDP endpoint may be launched.
 +
 +    An explicitly present ``BROWSER_TOOL_AUTO_CDP`` is the live override,
-+    including explicit false values. Otherwise use the shipped persistent
++    including explicit false values. Otherwise use the persistent
 +    ``browser.auto_launch_local_cdp`` config key.
 +    """
 +    if "BROWSER_TOOL_AUTO_CDP" in os.environ:
@@ -197,23 +650,22 @@ index bcc1455d7831c4a04e726d0aa95e732164aee4e9..a2f367d5095de4d5864af0411f39fe1f
 +            if isinstance(browser_cfg, dict)
 +            else False
 +        )
-+    except Exception as e:
-+        logger.debug("Could not read browser.auto_launch_local_cdp from config: %s", e)
++    except Exception as exc:
++        logger.debug(
++            "Could not read browser.auto_launch_local_cdp from config: %s", exc
++        )
 +        return False
 +
 +
 +def _ensure_local_cdp_ready(cdp_url: str) -> str:
-+    """On-demand: if ``cdp_url`` points at a *local loopback* DevTools endpoint
-+    that isn't up yet, launch the Hermes-managed debug Chrome (own persistent
-+    profile under ~/.hermes/chrome-debug), wait for it, and return a freshly
-+    resolved websocket endpoint.
++    """Launch the managed debug Chrome for a missing loopback CDP endpoint.
 +
-+    No-op for remote / non-loopback endpoints (cloud CDP is never launched
-+    locally) and when already reachable. Returns the input unchanged on any
-+    failure so the caller can surface the original connection error.
++    Remote endpoints are never launched locally. On failure, return the input
++    unchanged so the caller surfaces the normal CDP connection error.
 +    """
 +    if not _auto_launch_local_cdp_enabled():
 +        return cdp_url
++
 +    from urllib.parse import urlparse
 +
 +    parsed = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
@@ -226,8 +678,8 @@ index bcc1455d7831c4a04e726d0aa95e732164aee4e9..a2f367d5095de4d5864af0411f39fe1f
 +            is_browser_debug_ready,
 +            try_launch_chrome_debug,
 +        )
-+    except Exception as e:
-+        logger.debug("browser_connect helpers unavailable: %s", e)
++    except Exception as exc:
++        logger.debug("browser_connect helpers unavailable: %s", exc)
 +        return cdp_url
 +
 +    if is_browser_debug_ready(cdp_url, timeout=1.0):
@@ -244,15 +696,15 @@ index bcc1455d7831c4a04e726d0aa95e732164aee4e9..a2f367d5095de4d5864af0411f39fe1f
 +    )
 +    try:
 +        launched = try_launch_chrome_debug(port)
-+    except Exception as e:
-+        logger.warning("Auto-launch of debug Chrome failed: %s", e)
++    except Exception as exc:
++        logger.warning("Auto-launch of debug Chrome failed: %s", exc)
 +        launched = False
 +
 +    if not launched:
 +        return cdp_url
 +
-+    # launch_chrome_debug only waits a short grace window; slower browsers can
-+    # still be starting, so keep polling before re-resolving the endpoint.
++    # The launcher only waits through its short grace window. Keep polling for
++    # slower browser startups before resolving the concrete websocket URL.
 +    deadline = time.monotonic() + 12.0
 +    while time.monotonic() < deadline:
 +        if is_browser_debug_ready(cdp_url, timeout=0.05):
@@ -262,23 +714,28 @@ index bcc1455d7831c4a04e726d0aa95e732164aee4e9..a2f367d5095de4d5864af0411f39fe1f
 +    else:
 +        logger.warning("Debug Chrome launched but port %s not responding yet", port)
 +
-+    # Re-resolve so callers get a concrete ws:// endpoint now that Chrome is up.
 +    return _resolve_cdp_override(cdp_url)
 +
 +
  def _get_dialog_policy_config() -> Tuple[str, float]:
      """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s`` from config.
  
-@@ -2081,6 +2170,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+@@ -2824,8 +2910,12 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+     force_local = _is_local_sidecar_key(task_id)
+ 
      # Create session outside the lock (network call in cloud mode)
-     cdp_override = _get_cdp_override()
+-    cdp_override = _get_cdp_override()
++    # Read the raw endpoint first: resolving a stopped loopback endpoint can
++    # otherwise spend the discovery timeout before auto-launch gets a chance.
++    cdp_override = _get_cdp_override_raw()
      if cdp_override and not force_local:
 +        cdp_override = _ensure_local_cdp_ready(cdp_override)
++        cdp_override = _resolve_cdp_override(cdp_override)
          session_info = _create_cdp_session(task_id, cdp_override)
      elif force_local:
-         session_info = _create_local_session(task_id)
+         # Hybrid private-URL sidecar: NEVER the real profile (see
 diff --git a/tools/tts_tool.py b/tools/tts_tool.py
-index 545d72bb6907dfea58263f4bbf8ba20331da1c12..9e9129d5842085c586c34197e42a2ef8530c47d7 100644
+index 3aa4875922981478119b26f5eb0cda45beab26fc..1a077013c88e7dbd53b172c5dd2831c3ca337c89 100644
 --- a/tools/tts_tool.py
 +++ b/tools/tts_tool.py
 @@ -36,6 +36,7 @@ Usage:
@@ -287,10 +744,10 @@ index 545d72bb6907dfea58263f4bbf8ba20331da1c12..9e9129d5842085c586c34197e42a2ef8
  import base64
 +import copy
  import datetime
+ import importlib.util
  import json
- import logging
-@@ -362,6 +363,51 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
-     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+@@ -664,6 +665,50 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
+     return provider
  
  
 +def _apply_runtime_tts_overrides(
@@ -301,12 +758,11 @@ index 545d72bb6907dfea58263f4bbf8ba20331da1c12..9e9129d5842085c586c34197e42a2ef8
 +    model: Optional[str] = None,
 +    speed: Optional[float] = None,
 +) -> Dict[str, Any]:
-+    """Clone TTS config and apply transport-local persona overrides.
++    """Clone TTS config and apply transport-local speaker overrides.
 +
-+    Runtime overrides never mutate the user's loaded config and are deliberately
-+    absent from the model-facing tool schema. Values are written both to the
-+    generic plugin keys and the selected provider block because built-in and
-+    plugin providers resolve their options from different levels.
++    Values are written both to generic plugin keys and to the selected
++    provider block because built-in and plugin providers resolve options from
++    different levels. The caller's loaded config is never mutated.
 +    """
 +    resolved = copy.deepcopy(tts_config) if isinstance(tts_config, dict) else {}
 +    selected = str(provider or _get_provider(resolved)).lower().strip()
@@ -338,614 +794,56 @@ index 545d72bb6907dfea58263f4bbf8ba20331da1c12..9e9129d5842085c586c34197e42a2ef8
 +    return resolved
 +
 +
- # ===========================================================================
- # Custom command providers (type: command under tts.providers.<name>)
- # ===========================================================================
-@@ -2284,6 +2330,11 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
- def text_to_speech_tool(
-     text: str,
-     output_path: Optional[str] = None,
+ @dataclass(frozen=True)
+ class _MiniMaxTTSRuntime:
+     """A region-bound MiniMax endpoint and credential.
+@@ -3499,6 +3544,11 @@ def text_to_speech_tool(
+     speed: Optional[float] = None,
+     instructions: Optional[str] = None,
+     provider: Optional[str] = None,
 +    *,
 +    provider_override: Optional[str] = None,
 +    voice_override: Optional[str] = None,
 +    model_override: Optional[str] = None,
 +    speed_override: Optional[float] = None,
  ) -> str:
-     """
-     Convert text to speech audio.
-@@ -2299,6 +2350,12 @@ def text_to_speech_tool(
-         text: The text to convert to speech.
-         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+     """Convert text to speech audio with long-form chunking.
  
-+    Keyword-only, internal-use overrides (never exposed to the model schema):
-+        provider_override / voice_override / model_override / speed_override let
-+        an internal caller (e.g. a per-channel speaker persona) pick a provider
-+        and voice at call time without mutating the user's loaded config. When
-+        all are unset the loaded config is used unchanged.
+@@ -3523,6 +3573,9 @@ def text_to_speech_tool(
+         instructions: Optional voice-design guidance (tone, emotion, pacing).
+         provider: Optional TTS provider override.
+ 
++    Keyword-only internal overrides are reserved for transport speaker
++    personas. They are not registered in the model-facing tool schema.
 +
      Returns:
-         str: JSON result with success, file_path, and optionally MEDIA tag.
+         str: JSON result with success, file_path, file_paths, and MEDIA tag.
      """
-@@ -2306,6 +2363,19 @@ def text_to_speech_tool(
-         return tool_error("Text is required", success=False)
+@@ -3541,6 +3594,27 @@ def text_to_speech_tool(
  
      tts_config = _load_tts_config()
-+    # Apply call-time persona overrides only when at least one is supplied, so
-+    # the common (no-override) path uses the loaded config verbatim.
+ 
 +    if any(
-+        o is not None
-+        for o in (provider_override, voice_override, model_override, speed_override)
++        value is not None
++        for value in (
++            provider_override,
++            voice_override,
++            model_override,
++            speed_override,
++        )
 +    ):
++        if provider_override is not None:
++            provider = provider_override
++        if speed_override is not None:
++            speed = speed_override
 +        tts_config = _apply_runtime_tts_overrides(
 +            tts_config,
-+            provider=provider_override,
++            provider=provider,
 +            voice=voice_override,
 +            model=model_override,
-+            speed=speed_override,
++            speed=speed,
 +        )
-     provider = _get_provider(tts_config)
- 
-     # User-declared command provider (type: command under tts.providers.<name>)
-diff --git a/tests/gateway/test_telegram_location_keyboard_cleanup.py b/tests/gateway/test_telegram_location_keyboard_cleanup.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..9334805d6b7a782e4d630b312fc9153f27634a87
---- /dev/null
-+++ b/tests/gateway/test_telegram_location_keyboard_cleanup.py
-@@ -0,0 +1,201 @@
-+"""Telegram reply-keyboard cleanup after a location share.
 +
-+Telegram request-location buttons are *reply keyboards*: they stay pinned at
-+the bottom of the client until the bot sends a ``ReplyKeyboardRemove``. Once a
-+location/venue update arrives the coordinates are already in hand, so the
-+adapter must clear that stale keyboard immediately (via a short-lived control
-+message) instead of leaving the "share location" button stuck on screen while
-+the agent is still thinking.
-+"""
-+
-+import asyncio
-+import sys
-+from types import SimpleNamespace
-+from unittest.mock import AsyncMock, MagicMock
-+
-+from gateway.config import PlatformConfig
-+
-+
-+def _ensure_telegram_mock():
-+    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-+        return
-+
-+    telegram_mod = MagicMock()
-+    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-+    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-+    telegram_mod.constants.ChatType.GROUP = "group"
-+    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-+    telegram_mod.constants.ChatType.CHANNEL = "channel"
-+    telegram_mod.constants.ChatType.PRIVATE = "private"
-+
-+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-+        sys.modules.setdefault(name, telegram_mod)
-+
-+
-+_ensure_telegram_mock()
-+
-+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-+
-+
-+def _make_adapter():
-+    return TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
-+
-+
-+def _make_bot(send_side_effect=None):
-+    bot = MagicMock()
-+    sent = SimpleNamespace(message_id=555)
-+    bot.send_message = AsyncMock(return_value=sent, side_effect=send_side_effect)
-+    bot.delete_message = AsyncMock()
-+    return bot, sent
-+
-+
-+def _assert_is_keyboard_remove(reply_markup):
-+    import telegram
-+
-+    rkr = telegram.ReplyKeyboardRemove
-+    if isinstance(rkr, type):
-+        assert isinstance(reply_markup, rkr)
-+    else:  # mocked telegram module
-+        assert reply_markup is rkr.return_value
-+
-+
-+def _run_and_drain(coro):
-+    """Run ``coro`` and any fire-and-forget tasks it scheduled."""
-+
-+    async def runner():
-+        await coro
-+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-+        if pending:
-+            await asyncio.gather(*pending)
-+
-+    asyncio.run(runner())
-+
-+
-+def test_location_share_sends_reply_keyboard_remove():
-+    adapter = _make_adapter()
-+    bot, _ = _make_bot()
-+    adapter._bot = bot
-+    msg = SimpleNamespace(chat_id=111, message_thread_id=None)
-+
-+    _run_and_drain(adapter._remove_location_request_keyboard(msg))
-+
-+    kwargs = bot.send_message.await_args.kwargs
-+    assert kwargs["chat_id"] == 111
-+    assert kwargs["text"]  # keyboard removal needs a carrier message
-+    _assert_is_keyboard_remove(kwargs["reply_markup"])
-+
-+
-+def test_control_notice_is_deleted_after_the_keyboard_is_cleared(monkeypatch):
-+    """The carrier message is transient: it gets deleted shortly after."""
-+    adapter = _make_adapter()
-+    bot, sent = _make_bot()
-+    adapter._bot = bot
-+    msg = SimpleNamespace(chat_id=111, message_thread_id=None)
-+
-+    async def instant_sleep(_delay):
-+        return None
-+
-+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
-+    _run_and_drain(adapter._remove_location_request_keyboard(msg))
-+
-+    bot.delete_message.assert_awaited_once_with(
-+        chat_id=111, message_id=sent.message_id
-+    )
-+
-+
-+def test_thread_scoped_send_failure_retries_without_thread_id():
-+    """Some forum/private-topic sends reject ``message_thread_id`` for control
-+    messages; keyboard removal is chat-scoped, so retry once without it."""
-+    adapter = _make_adapter()
-+    bot, sent = _make_bot()
-+    bot.send_message.side_effect = [RuntimeError("Bad Request: thread not found"), sent]
-+    adapter._bot = bot
-+    msg = SimpleNamespace(chat_id=111, message_thread_id=7)
-+
-+    _run_and_drain(adapter._remove_location_request_keyboard(msg))
-+
-+    first, second = bot.send_message.await_args_list
-+    assert first.kwargs["message_thread_id"] == 7
-+    assert "message_thread_id" not in second.kwargs
-+    _assert_is_keyboard_remove(second.kwargs["reply_markup"])
-+
-+
-+def test_missing_bot_or_chat_id_is_a_silent_noop():
-+    adapter = _make_adapter()
-+    adapter._bot = None
-+    _run_and_drain(
-+        adapter._remove_location_request_keyboard(SimpleNamespace(chat_id=111))
-+    )
-+
-+    bot, _ = _make_bot()
-+    adapter._bot = bot
-+    _run_and_drain(
-+        adapter._remove_location_request_keyboard(SimpleNamespace(chat_id=None))
-+    )
-+    bot.send_message.assert_not_awaited()
-+
-+
-+def _location_update(msg):
-+    return SimpleNamespace(effective_message=msg, message=msg, update_id=1)
-+
-+
-+def _wire_location_flow(adapter, monkeypatch):
-+    """Stub authorization and downstream dispatch; record cleanup calls."""
-+    cleaned = []
-+    handled = []
-+
-+    monkeypatch.setattr(
-+        adapter, "_is_user_authorized_from_message", lambda m: True
-+    )
-+    monkeypatch.setattr(adapter, "_should_process_message", lambda m: True)
-+
-+    async def record_cleanup(m):
-+        cleaned.append(m)
-+
-+    monkeypatch.setattr(
-+        adapter, "_remove_location_request_keyboard", record_cleanup
-+    )
-+
-+    event = SimpleNamespace(text="")
-+    monkeypatch.setattr(
-+        adapter, "_build_message_event", lambda *a, **k: event
-+    )
-+    monkeypatch.setattr(
-+        adapter, "_apply_telegram_group_observe_attribution", lambda e: e
-+    )
-+
-+    async def record_handle(e):
-+        handled.append(e)
-+
-+    monkeypatch.setattr(adapter, "handle_message", record_handle)
-+    return cleaned, handled
-+
-+
-+def test_location_message_triggers_keyboard_cleanup_and_dispatch(monkeypatch):
-+    adapter = _make_adapter()
-+    cleaned, handled = _wire_location_flow(adapter, monkeypatch)
-+    msg = SimpleNamespace(
-+        chat_id=111,
-+        message_thread_id=None,
-+        venue=None,
-+        location=SimpleNamespace(latitude=52.52, longitude=13.405),
-+    )
-+
-+    asyncio.run(adapter._handle_location_message(_location_update(msg), None))
-+
-+    assert cleaned == [msg]
-+    assert len(handled) == 1
-+    assert "52.52" in handled[0].text
-+
-+
-+def test_update_without_location_never_touches_the_keyboard(monkeypatch):
-+    adapter = _make_adapter()
-+    cleaned, handled = _wire_location_flow(adapter, monkeypatch)
-+    msg = SimpleNamespace(
-+        chat_id=111, message_thread_id=None, venue=None, location=None
-+    )
-+
-+    asyncio.run(adapter._handle_location_message(_location_update(msg), None))
-+
-+    assert cleaned == []
-+    assert handled == []
-diff --git a/tests/hermes_cli/test_browser_connect_loopback_binding.py b/tests/hermes_cli/test_browser_connect_loopback_binding.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..2fb668f30f6d3471afff90e56fcb61733cc8473a
---- /dev/null
-+++ b/tests/hermes_cli/test_browser_connect_loopback_binding.py
-@@ -0,0 +1,42 @@
-+"""The Hermes-managed debug Chrome must expose DevTools on loopback only.
-+
-+Without ``--remote-debugging-address=127.0.0.1`` Chrome may bind the remote
-+debugging socket more broadly, exposing an unauthenticated CDP endpoint to the
-+local network. Every launch path (direct spawn and the copy-paste manual
-+commands) must pin the listener to the IPv4 loopback.
-+"""
-+
-+from unittest.mock import patch
-+
-+
-+def test_debug_launch_args_pin_devtools_to_loopback():
-+    from hermes_cli.browser_connect import _chrome_debug_args
-+
-+    args = _chrome_debug_args(9222)
-+    assert "--remote-debugging-address=127.0.0.1" in args
-+    assert "--remote-debugging-port=9222" in args
-+
-+
-+def test_manual_command_with_detected_binary_pins_loopback():
-+    from hermes_cli.browser_connect import manual_chrome_debug_command
-+
-+    with patch(
-+        "hermes_cli.browser_connect.get_chrome_debug_candidates",
-+        return_value=["/usr/bin/chromium"],
-+    ):
-+        cmd = manual_chrome_debug_command(9222, system="Linux")
-+
-+    assert cmd is not None
-+    assert "--remote-debugging-address=127.0.0.1" in cmd
-+
-+
-+def test_manual_command_darwin_open_fallback_pins_loopback():
-+    from hermes_cli.browser_connect import manual_chrome_debug_command
-+
-+    with patch(
-+        "hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]
-+    ):
-+        cmd = manual_chrome_debug_command(9222, system="Darwin")
-+
-+    assert cmd is not None
-+    assert "--remote-debugging-address=127.0.0.1" in cmd
-diff --git a/tests/tools/test_browser_auto_cdp.py b/tests/tools/test_browser_auto_cdp.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..ae2daec2e5dda8af044b2880b061571aea1079f5
---- /dev/null
-+++ b/tests/tools/test_browser_auto_cdp.py
-@@ -0,0 +1,136 @@
-+"""Opt-in auto-launch of a local debug Chrome for loopback ``cdp_url`` endpoints.
-+
-+When config (or its explicit environment override) enables auto-CDP and the
-+configured CDP override points at a loopback endpoint that is not listening, the browser tool
-+launches the Hermes-managed debug Chrome on demand instead of failing the
-+connection. Remote/cloud endpoints are never auto-launched, and the feature is
-+fully inert unless explicitly enabled.
-+"""
-+
-+from unittest.mock import patch
-+
-+LOCAL_URL = "http://127.0.0.1:9222"
-+REMOTE_URL = "http://198.51.100.7:9222"
-+RESOLVED_WS = "ws://127.0.0.1:9222/devtools/browser/abc123"
-+
-+
-+def test_config_true_enables_auto_cdp(monkeypatch):
-+    from tools.browser_tool import _auto_launch_local_cdp_enabled
-+
-+    monkeypatch.delenv("BROWSER_TOOL_AUTO_CDP", raising=False)
-+    with patch(
-+        "hermes_cli.config.read_raw_config",
-+        return_value={"browser": {"auto_launch_local_cdp": True}},
-+    ):
-+        assert _auto_launch_local_cdp_enabled() is True
-+
-+
-+def test_config_false_disables_auto_cdp(monkeypatch):
-+    from tools.browser_tool import _auto_launch_local_cdp_enabled
-+
-+    monkeypatch.delenv("BROWSER_TOOL_AUTO_CDP", raising=False)
-+    with patch(
-+        "hermes_cli.config.read_raw_config",
-+        return_value={"browser": {"auto_launch_local_cdp": False}},
-+    ):
-+        assert _auto_launch_local_cdp_enabled() is False
-+
-+
-+def test_explicit_env_override_has_deterministic_precedence(monkeypatch):
-+    from tools.browser_tool import _auto_launch_local_cdp_enabled
-+
-+    with patch(
-+        "hermes_cli.config.read_raw_config",
-+        return_value={"browser": {"auto_launch_local_cdp": True}},
-+    ) as mock_config:
-+        monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "0")
-+        assert _auto_launch_local_cdp_enabled() is False
-+        monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
-+        assert _auto_launch_local_cdp_enabled() is True
-+    mock_config.assert_not_called()
-+
-+
-+def test_enabled_never_launches_for_non_loopback_endpoint(monkeypatch):
-+    """Cloud/remote CDP endpoints must never trigger a local browser launch."""
-+    from tools.browser_tool import _ensure_local_cdp_ready
-+
-+    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
-+    with patch("hermes_cli.browser_connect.try_launch_chrome_debug") as mock_launch:
-+        assert _ensure_local_cdp_ready(REMOTE_URL) == REMOTE_URL
-+
-+    mock_launch.assert_not_called()
-+
-+
-+def test_enabled_already_listening_endpoint_is_left_alone(monkeypatch):
-+    from tools.browser_tool import _ensure_local_cdp_ready
-+
-+    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
-+    with patch("hermes_cli.browser_connect.is_browser_debug_ready", return_value=True), \
-+            patch("hermes_cli.browser_connect.try_launch_chrome_debug") as mock_launch:
-+        assert _ensure_local_cdp_ready(LOCAL_URL) == LOCAL_URL
-+
-+    mock_launch.assert_not_called()
-+
-+
-+def test_enabled_launches_waits_and_reresolves(monkeypatch):
-+    """Loopback endpoint down -> launch debug Chrome on that port, wait until
-+    the port answers, then return a freshly resolved websocket endpoint."""
-+    from tools.browser_tool import _ensure_local_cdp_ready
-+
-+    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
-+    # First probe: endpoint down. Second probe (post-launch poll): up.
-+    with patch(
-+        "hermes_cli.browser_connect.is_browser_debug_ready",
-+        side_effect=[False, True],
-+    ), patch(
-+        "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
-+    ) as mock_launch, patch(
-+        "tools.browser_tool._resolve_cdp_override", return_value=RESOLVED_WS
-+    ) as mock_resolve:
-+        assert _ensure_local_cdp_ready(LOCAL_URL) == RESOLVED_WS
-+
-+    mock_launch.assert_called_once_with(9222)
-+    mock_resolve.assert_called_once_with(LOCAL_URL)
-+
-+
-+def test_failed_launch_returns_original_url(monkeypatch):
-+    """A failed launch surfaces the caller's normal connection error path."""
-+    from tools.browser_tool import _ensure_local_cdp_ready
-+
-+    monkeypatch.setenv("BROWSER_TOOL_AUTO_CDP", "1")
-+    with patch("hermes_cli.browser_connect.is_browser_debug_ready", return_value=False), \
-+            patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False):
-+        assert _ensure_local_cdp_ready(LOCAL_URL) == LOCAL_URL
-+
-+
-+def test_get_session_info_runs_auto_launch_on_the_cdp_override_path(monkeypatch):
-+    """The CDP-override session path passes the override through the
-+    auto-launch hook and connects to whatever endpoint it returns."""
-+    import tools.browser_tool as bt
-+
-+    task_id = "test-auto-cdp-wiring"
-+    calls = {}
-+
-+    monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda: None)
-+    monkeypatch.setattr(bt, "_update_session_activity", lambda tid: None)
-+    monkeypatch.setattr(bt, "_get_cdp_override", lambda: LOCAL_URL)
-+
-+    def fake_ensure(url):
-+        calls["ensured"] = url
-+        return RESOLVED_WS
-+
-+    def fake_create(tid, url):
-+        calls["created"] = url
-+        return {"session_id": tid, "cdp_url": url, "provider": "cdp"}
-+
-+    monkeypatch.setattr(bt, "_ensure_local_cdp_ready", fake_ensure)
-+    monkeypatch.setattr(bt, "_create_cdp_session", fake_create)
-+
-+    try:
-+        info = bt._get_session_info(task_id)
-+    finally:
-+        bt._active_sessions.pop(task_id, None)
-+
-+    assert calls["ensured"] == LOCAL_URL
-+    assert calls["created"] == RESOLVED_WS
-+    assert info["cdp_url"] == RESOLVED_WS
-diff --git a/tests/tools/test_tts_runtime_overrides.py b/tests/tools/test_tts_runtime_overrides.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..fe55ae05186d31089a9c8ea5c2c4f28a46fa024c
---- /dev/null
-+++ b/tests/tools/test_tts_runtime_overrides.py
-@@ -0,0 +1,160 @@
-+"""Runtime-only TTS overrides used by transport speaker personas.
-+
-+These overrides let internal callers (e.g. a per-channel speaker persona) pick a
-+provider/voice at call time without mutating the user's loaded ``tts`` config and
-+without ever exposing the knobs to the model-facing tool schema.
-+"""
-+
-+import pytest
-+
-+
-+def test_runtime_overrides_are_provider_scoped_and_do_not_mutate_config():
-+    from tools.tts_tool import _apply_runtime_tts_overrides
-+
-+    original = {
-+        "provider": "openai",
-+        "voice": "global-old",
-+        "edge": {"voice": "edge-old", "speed": 1.0},
-+    }
-+
-+    resolved = _apply_runtime_tts_overrides(
-+        original,
-+        provider="edge",
-+        voice="en-US-AriaNeural",
-+        model="edge-persona-model",
-+        speed=1.15,
-+    )
-+
-+    assert original == {
-+        "provider": "openai",
-+        "voice": "global-old",
-+        "edge": {"voice": "edge-old", "speed": 1.0},
-+    }
-+    assert resolved["provider"] == "edge"
-+    assert resolved["voice"] == "en-US-AriaNeural"
-+    assert resolved["model"] == "edge-persona-model"
-+    assert resolved["speed"] == 1.15
-+    assert resolved["edge"]["voice"] == "en-US-AriaNeural"
-+    assert resolved["edge"]["voice_id"] == "en-US-AriaNeural"
-+    assert resolved["edge"]["model"] == "edge-persona-model"
-+    assert resolved["edge"]["model_id"] == "edge-persona-model"
-+    assert resolved["edge"]["speed"] == 1.15
-+
-+
-+def test_named_providers_block_is_updated_when_present():
-+    """When provider config lives under ``tts.providers.<name>`` the override
-+    must reach that block too, since plugin/command providers resolve there."""
-+    from tools.tts_tool import _apply_runtime_tts_overrides
-+
-+    original = {
-+        "provider": "myvoice",
-+        "providers": {"myvoice": {"type": "command", "voice": "old"}},
-+    }
-+    resolved = _apply_runtime_tts_overrides(original, voice="new")
-+
-+    assert original["providers"]["myvoice"] == {"type": "command", "voice": "old"}
-+    assert resolved["providers"]["myvoice"]["voice"] == "new"
-+    assert resolved["providers"]["myvoice"]["type"] == "command"
-+
-+
-+def test_voice_override_reaches_the_generator_config(monkeypatch, tmp_path):
-+    """End-to-end: a voice override flows into the config the provider sees."""
-+    import tools.tts_tool as tts
-+
-+    captured = {}
-+
-+    monkeypatch.setattr(
-+        tts, "_load_tts_config", lambda: {"provider": "openai", "openai": {"voice": "alloy"}}
-+    )
-+    monkeypatch.setattr(tts, "_import_openai_client", lambda: None)
-+
-+    def fake_openai(text, out, cfg):
-+        captured["cfg"] = cfg
-+        raise RuntimeError("stop-after-capture")
-+
-+    monkeypatch.setattr(tts, "_generate_openai_tts", fake_openai)
-+
-+    tts.text_to_speech_tool(
-+        "hi", output_path=str(tmp_path / "o.mp3"), voice_override="nova"
-+    )
-+
-+    cfg = captured["cfg"]
-+    assert cfg["voice"] == "nova"
-+    assert cfg["openai"]["voice"] == "nova"
-+    assert cfg["openai"]["voice_id"] == "nova"
-+
-+
-+def test_provider_override_routes_to_the_overridden_provider(monkeypatch, tmp_path):
-+    """A provider override changes which backend generates the audio."""
-+    import tools.tts_tool as tts
-+
-+    captured = {}
-+    minimax_called = {"hit": False}
-+
-+    monkeypatch.setattr(tts, "_load_tts_config", lambda: {"provider": "minimax"})
-+    monkeypatch.setattr(tts, "_import_openai_client", lambda: None)
-+
-+    def fake_minimax(text, out, cfg):
-+        minimax_called["hit"] = True
-+
-+    def fake_openai(text, out, cfg):
-+        captured["cfg"] = cfg
-+        raise RuntimeError("stop-after-capture")
-+
-+    monkeypatch.setattr(tts, "_generate_minimax_tts", fake_minimax)
-+    monkeypatch.setattr(tts, "_generate_openai_tts", fake_openai)
-+
-+    tts.text_to_speech_tool(
-+        "hi",
-+        output_path=str(tmp_path / "o.mp3"),
-+        provider_override="openai",
-+        voice_override="nova",
-+    )
-+
-+    assert captured["cfg"]["provider"] == "openai"
-+    assert captured["cfg"]["openai"]["voice"] == "nova"
-+    assert minimax_called["hit"] is False
-+
-+
-+def test_no_overrides_leaves_the_loaded_config_untouched(monkeypatch, tmp_path):
-+    """The unused path must be byte-for-byte identical to current behavior:
-+    no provider block synthesized, no deep-copy normalization."""
-+    import tools.tts_tool as tts
-+
-+    base = {"provider": "openai", "voice": "alloy"}  # deliberately no "openai" key
-+    captured = {}
-+
-+    monkeypatch.setattr(tts, "_load_tts_config", lambda: base)
-+    monkeypatch.setattr(tts, "_import_openai_client", lambda: None)
-+
-+    def fake_openai(text, out, cfg):
-+        captured["cfg"] = cfg
-+        raise RuntimeError("stop-after-capture")
-+
-+    monkeypatch.setattr(tts, "_generate_openai_tts", fake_openai)
-+
-+    tts.text_to_speech_tool("hi", output_path=str(tmp_path / "o.mp3"))
-+
-+    cfg = captured["cfg"]
-+    assert "openai" not in cfg
-+    assert cfg == {"provider": "openai", "voice": "alloy"}
-+
-+
-+def test_runtime_overrides_are_absent_from_the_model_schema():
-+    """The model must not be able to pick a provider/voice: the overrides are
-+    call-time only and never appear in the registered tool schema."""
-+    from tools.tts_tool import TTS_SCHEMA
-+
-+    props = TTS_SCHEMA["parameters"]["properties"]
-+    for forbidden in (
-+        "provider_override",
-+        "voice_override",
-+        "model_override",
-+        "speed_override",
-+        "provider",
-+        "voice",
-+        "model",
-+        "speed",
-+    ):
-+        assert forbidden not in props, f"{forbidden} leaked into the model schema"
-+    assert "text" in TTS_SCHEMA["parameters"]["required"]
+     # When the model supplies a speed parameter, inject it into the config
+     # so all downstream provider functions pick it up uniformly.
+     if speed is not None:

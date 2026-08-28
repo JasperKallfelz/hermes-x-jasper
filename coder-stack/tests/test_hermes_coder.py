@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -24,6 +25,10 @@ import time
 
 vendor = Path(sys.argv[0]).name
 mode = os.environ.get("STUB_" + vendor.upper(), "success")
+
+if sys.argv[1:] == ["--version"]:
+    print(os.environ.get("STUB_CODEX_VERSION", "codex-cli 1.2.3"))
+    raise SystemExit(int(os.environ.get("STUB_CODEX_VERSION_EXIT", "0")))
 
 
 def stdin_is_devnull():
@@ -56,11 +61,17 @@ if sys.argv[1:] in (["auth", "status"], ["login", "status"]):
         raise SystemExit(0)
     raise SystemExit("unknown auth mode " + auth_mode)
 log = Path(os.environ["STUB_INVOCATIONS"])
+attempt_index = len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
+mode_sequence = os.environ.get("STUB_" + vendor.upper() + "_SEQUENCE")
+if mode_sequence:
+    modes = json.loads(mode_sequence)
+    mode = modes[min(attempt_index, len(modes) - 1)]
 with log.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps({
         "vendor": vendor,
         "mode": mode,
         "argv": sys.argv[1:],
+        "codex_home": os.environ.get("CODEX_HOME"),
         "llvm_profile_file": os.environ.get("LLVM_PROFILE_FILE"),
         "stdin_devnull": stdin_is_devnull(),
     }) + "\n")
@@ -69,6 +80,10 @@ final_text = os.environ.get(
     "STUB_" + vendor.upper() + "_FINAL",
     os.environ.get("STUB_FINAL_TEXT", "isolated final answer"),
 )
+final_sequence = os.environ.get("STUB_" + vendor.upper() + "_FINAL_SEQUENCE")
+if final_sequence:
+    final_values = json.loads(final_sequence)
+    final_text = final_values[min(attempt_index, len(final_values) - 1)]
 
 
 def emit_native(text):
@@ -105,7 +120,7 @@ elif mode == "capability":
 elif mode == "large_quota":
     sys.stdout.write("x" * 300000)
     sys.stderr.write("y" * 300000)
-    print("\nClaude usage limit reached for this account")
+    print("\nCodex usage limit reached for this account")
     raise SystemExit(9)
 elif mode == "sleep":
     time.sleep(10)
@@ -215,7 +230,6 @@ class HermesCoderTest(unittest.TestCase):
         self.home.mkdir()
         self.work.mkdir()
         self.bin.mkdir()
-        self.claude = self._executable("claude", MODEL_STUB)
         self.codex = self._executable("codex", MODEL_STUB)
         self.invocations = self.base / "model-invocations.jsonl"
         self.gate_invocations = self.base / "gate-invocations.txt"
@@ -227,8 +241,8 @@ class HermesCoderTest(unittest.TestCase):
         self.env.update(
             {
                 "HOME": str(self.home),
-                "HERMES_CODER_CLAUDE": str(self.claude),
                 "HERMES_CODER_CODEX": str(self.codex),
+                "HERMES_UNSAFE_EXECUTABLE_OVERRIDES": "1",
                 "HERMES_CODER_LOG": str(self.journal),
                 "HERMES_CODER_STATE": str(self.state),
                 "STUB_INVOCATIONS": str(self.invocations),
@@ -238,7 +252,7 @@ class HermesCoderTest(unittest.TestCase):
                 "PYTHONPYCACHEPREFIX": str(self.base / "pycache"),
             }
         )
-        for name in ("HERMES_CODER_ACTIVE", "HERMES_FLOW_ACTIVE"):
+        for name in ("HERMES_CODER_ACTIVE", "HERMES_FLOW_ACTIVE", "CODEX_HOME"):
             self.env.pop(name, None)
 
     def tearDown(self):
@@ -283,26 +297,26 @@ class HermesCoderTest(unittest.TestCase):
     # -- model-free doctor --------------------------------------------
 
     def test_doctor_ready_is_machine_readable_and_invokes_auth_status_only(self):
-        result = self.run_coder("--doctor", "both")
+        result = self.run_coder("--doctor", "--requirement", "codex")
         self.assertEqual(result.returncode, 0, result.stderr)
         document = json.loads(result.stdout)
         self.assertEqual(document["kind"], "hermes-coder-doctor")
         self.assertTrue(document["ready"])
         self.assertEqual(document["reason_id"], "ready")
-        self.assertTrue(document["vendors"]["claude"]["authenticated"])
         self.assertTrue(document["vendors"]["codex"]["authenticated"])
+        self.assertEqual(set(document["vendors"]), {"codex"})
         health_calls = [
             json.loads(line)
             for line in self.health_invocations.read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(
             [(call["vendor"], call["argv"]) for call in health_calls],
-            [("claude", ["auth", "status"]), ("codex", ["login", "status"])],
+            [("codex", ["login", "status"])],
         )
         self.assertEqual(self.calls(), [])
 
     def test_auth_model_and_gate_children_receive_devnull_stdin(self):
-        doctor = self.run_coder("--doctor", "both")
+        doctor = self.run_coder("--doctor")
         self.assertEqual(doctor.returncode, 0, doctor.stderr)
         health_calls = [
             json.loads(line)
@@ -325,58 +339,84 @@ class HermesCoderTest(unittest.TestCase):
         captured = self.gate_stdin_capture.read_text(encoding="utf-8").splitlines()
         self.assertEqual(captured, ["True"])
 
-    def test_doctor_any_vs_both_with_one_unready_vendor(self):
+    def test_active_codex_home_pointer_under_home_is_honored(self):
+        account_home = self.home / ".codex" / "account-a"
+        account_home.mkdir(parents=True)
+        (account_home / "auth.json").write_text("{}\n", encoding="utf-8")
+        (self.home / ".codex-active-home").write_text(
+            str(account_home) + "\n", encoding="utf-8"
+        )
+        account_home.chmod(0o700)
+        (account_home / "auth.json").chmod(0o600)
+        (self.home / ".codex-active-home").chmod(0o600)
+        result = self.run_coder("--no-escalate", "task")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls()[0]["codex_home"], str(account_home.resolve()))
+
+    def test_active_codex_home_pointer_outside_home_is_ignored(self):
+        outside = self.base / "outside-account"
+        outside.mkdir()
+        (outside / "auth.json").write_text("{}\n", encoding="utf-8")
+        (self.home / ".codex-active-home").write_text(
+            str(outside) + "\n", encoding="utf-8"
+        )
+        outside.chmod(0o700)
+        (outside / "auth.json").chmod(0o600)
+        (self.home / ".codex-active-home").chmod(0o600)
+        result = self.run_coder("--no-escalate", "task")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.calls()[0]["codex_home"])
+
+    def test_doctor_unready_codex_is_unavailable_and_privacy_safe(self):
         env = self.env.copy()
         env["STUB_CODEX_AUTH"] = "unready"
-        any_result = self.run_coder("--doctor", "any", env=env)
-        both_result = self.run_coder("--doctor", "both", env=env)
-        self.assertEqual(any_result.returncode, 0, any_result.stderr)
-        self.assertTrue(json.loads(any_result.stdout)["ready"])
-        self.assertEqual(both_result.returncode, 75, both_result.stderr)
-        document = json.loads(both_result.stdout)
+        result = self.run_coder("--doctor", env=env)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        document = json.loads(result.stdout)
         self.assertFalse(document["ready"])
         self.assertEqual(document["reason_id"], "requirement_not_met")
+        self.assertEqual(document["requirement"], "codex")
         self.assertEqual(document["vendors"]["codex"]["reason_id"], "codex_auth_unavailable")
-        self.assertNotIn("private-user@example.invalid", both_result.stdout)
-        self.assertNotIn("/private/credentials", both_result.stdout)
+        self.assertNotIn("private-user@example.invalid", result.stdout)
+        self.assertNotIn("/private/credentials", result.stdout)
 
     def test_doctor_missing_installation_has_stable_reason(self):
         env = self.env.copy()
-        env["HERMES_CODER_CLAUDE"] = str(self.base / "missing-claude")
-        result = self.run_coder("--doctor", "both", env=env)
+        env["HERMES_CODER_CODEX"] = str(self.base / "missing-codex")
+        result = self.run_coder("--doctor", env=env)
         self.assertEqual(result.returncode, 75, result.stderr)
         document = json.loads(result.stdout)
-        self.assertEqual(document["vendors"]["claude"]["reason_id"], "claude_not_installed")
-        self.assertFalse(document["vendors"]["claude"]["installed"])
+        self.assertEqual(document["vendors"]["codex"]["reason_id"], "codex_not_installed")
+        self.assertFalse(document["vendors"]["codex"]["installed"])
         self.assertNotIn(str(self.base), result.stdout)
 
     def test_doctor_auth_timeout_is_bounded_and_privacy_safe(self):
         env = self.env.copy()
-        env["STUB_CLAUDE_AUTH"] = "sleep"
-        result = self.run_coder("--doctor", "both", "--doctor-timeout", "0.1", env=env)
+        env["STUB_CODEX_AUTH"] = "sleep"
+        result = self.run_coder("--doctor", "--doctor-timeout", "0.1", env=env)
         self.assertEqual(result.returncode, 75, result.stderr)
         document = json.loads(result.stdout)
-        self.assertEqual(document["vendors"]["claude"]["reason_id"], "claude_auth_timeout")
+        self.assertEqual(document["vendors"]["codex"]["reason_id"], "codex_auth_timeout")
         self.assertNotIn("private-user@example.invalid", result.stdout)
         self.assertNotIn("credential", result.stdout)
 
-    def test_quota_on_stdout_and_stderr_blocks_both_vendors(self):
-        for claude_mode, codex_mode in (("quota_stdout", "quota_stderr"), ("quota_stderr", "quota_stdout")):
-            with self.subTest(claude=claude_mode, codex=codex_mode):
+    def test_quota_on_stdout_and_stderr_blocks_codex_for_the_run(self):
+        for codex_mode in ("quota_stdout", "quota_stderr"):
+            with self.subTest(codex=codex_mode):
                 self.invocations.unlink(missing_ok=True)
                 self.journal.unlink(missing_ok=True)
                 self.state.unlink(missing_ok=True)
                 env = self.env.copy()
-                env.update(STUB_CLAUDE=claude_mode, STUB_CODEX=codex_mode)
+                env["STUB_CODEX"] = codex_mode
                 result = self.run_coder("--lane", "fast", "task", env=env)
                 self.assertEqual(result.returncode, 75, result.stderr)
-                self.assertEqual([call["vendor"] for call in self.calls()], ["claude", "codex"])
+                self.assertEqual([call["vendor"] for call in self.calls()], ["codex"])
                 classes = [r.get("failure_class") for r in self.records() if r["event"] == "attempt"]
-                self.assertEqual(classes, ["quota_or_auth", "quota_or_auth"])
+                self.assertEqual(classes, ["quota_or_auth"])
 
     def test_success_with_quota_chatter_is_success(self):
         env = self.env.copy()
-        env["STUB_CLAUDE"] = "chatter_success"
+        env["STUB_CODEX"] = "chatter_success"
         result = self.run_coder("--lane", "fast", "task", env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         attempt = next(r for r in self.records() if r["event"] == "attempt")
@@ -384,91 +424,110 @@ class HermesCoderTest(unittest.TestCase):
 
     def test_bare_401_and_429_are_not_quota(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="bare_status", STUB_CODEX="success")
+        env["STUB_CODEX"] = "bare_status"
         result = self.run_coder("--no-escalate", "task", env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 75, result.stderr)
         attempt = next(r for r in self.records() if r["event"] == "attempt")
         self.assertEqual(attempt["failure_class"], "capability_failure")
 
-    def test_asymmetric_vendor_blocking_continues_other_vendor_up_chain(self):
+    def test_quota_circuit_stops_same_provider_lane_escalation(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="quota_stdout", STUB_CODEX="capability")
+        env["STUB_CODEX"] = "quota_stdout"
         result = self.run_coder("--lane", "fast", "task", env=env)
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertEqual(
             [call["vendor"] for call in self.calls()],
-            ["claude", "codex", "codex", "codex", "codex"],
+            ["codex"],
         )
 
     def test_full_capability_chain_is_finite(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="capability", STUB_CODEX="capability")
+        env["STUB_CODEX"] = "capability"
         result = self.run_coder("--lane", "fast", "task", env=env)
         self.assertEqual(result.returncode, 75, result.stderr)
-        self.assertEqual(len(self.calls()), 8)
+        self.assertEqual(len(self.calls()), 4)
 
     def test_max_attempts_bounds_capability_chain(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="capability", STUB_CODEX="capability")
+        env["STUB_CODEX"] = "capability"
         result = self.run_coder("--lane", "fast", "--max-attempts", "3", "task", env=env)
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertEqual(len(self.calls()), 3)
 
     def test_missing_model_binary_is_harness_error(self):
         env = self.env.copy()
-        env["HERMES_CODER_CLAUDE"] = str(self.base / "missing-model")
+        env["HERMES_CODER_CODEX"] = str(self.base / "missing-model")
         result = self.run_coder("--lane", "fast", "task", env=env)
         self.assertEqual(result.returncode, 70, result.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_large_streams_do_not_deadlock_and_still_classify(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="large_quota", STUB_CODEX="quota_stderr")
+        env["STUB_CODEX"] = "large_quota"
         result = self.run_coder("--no-escalate", "task", env=env, timeout=20)
         self.assertEqual(result.returncode, 75, result.stderr[-2000:])
         self.assertGreater(len(result.stdout), 250000)
         self.assertGreater(len(result.stderr), 250000)
 
-    def test_attempt_timeout_is_classified_and_chain_continues(self):
+    def test_attempt_timeout_is_classified_and_bounded(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="sleep", STUB_CODEX="success")
+        env["STUB_CODEX"] = "sleep"
         result = self.run_coder("--no-escalate", "--attempt-timeout", "2", "task", env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 75, result.stderr)
         first = next(r for r in self.records() if r["event"] == "attempt")
         self.assertEqual(first["failure_class"], "timeout")
         self.assertEqual(first["reason_id"], "attempt_timeout")
 
     def test_wall_clock_budget_stops_before_another_attempt(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="sleep", STUB_CODEX="success")
+        env["STUB_CODEX"] = "sleep"
         result = self.run_coder(
             "--lane", "fast", "--attempt-timeout", "20", "--wall-timeout", "0.5", "task", env=env
         )
         self.assertEqual(result.returncode, 124, result.stderr)
         attempts = [r for r in self.records() if r["event"] == "attempt"]
-        self.assertEqual(len(attempts), 1)
-        run_end = next(r for r in self.records() if r["event"] == "run_end")
-        self.assertEqual(run_end["reason_id"], "wall_timeout")
+        # The version probe is part of the one end-to-end wall budget. Under
+        # scheduler load it may consume this deliberately tiny allowance, in
+        # which case starting zero model attempts is the stricter result.
+        self.assertLessEqual(len(attempts), 1)
+        self.assertLessEqual(len(self.calls()), 1)
+        run_ends = [r for r in self.records() if r["event"] == "run_end"]
+        if run_ends:
+            self.assertEqual(run_ends[0]["reason_id"], "wall_timeout")
+        else:
+            self.assertIn("codex_identity_timeout", result.stderr)
+
+    def test_ambient_test_identity_variables_cannot_bypass_version_probe(self):
+        env = self.env.copy()
+        env.update({
+            "HERMES_TEST_CODEX_IDENTITY": "codex",
+            "HERMES_UNSAFE_EXECUTABLE_OVERRIDES": "1",
+            "STUB_CODEX_VERSION": "definitely-not-codex",
+        })
+        result = self.run_coder("--no-escalate", "task", env=env)
+        self.assertEqual(result.returncode, 70, result.stderr)
+        self.assertIn("codex_identity_unverified", result.stderr)
+        self.assertEqual(self.calls(), [])
 
     def test_signal_abort_normalizes_to_130_and_stops(self):
         env = self.env.copy()
-        env.update(STUB_CLAUDE="abort", STUB_CODEX="success")
+        env["STUB_CODEX"] = "abort"
         result = self.run_coder("--lane", "fast", "task", env=env)
         self.assertEqual(result.returncode, 130, result.stderr)
-        self.assertEqual([call["vendor"] for call in self.calls()], ["claude"])
+        self.assertEqual([call["vendor"] for call in self.calls()], ["codex"])
         self.assertNotIn("Traceback", result.stderr)
 
     def test_journal_is_private_and_contains_no_sensitive_material(self):
         prompt = "PROMPT_SECRET_72fbb"
         env = self.env.copy()
-        env.update(STUB_CLAUDE="chatter_success", ENV_SECRET_MARKER="ENV_SECRET_991ab")
+        env.update(STUB_CODEX="chatter_success", ENV_SECRET_MARKER="ENV_SECRET_991ab")
         result = self.run_coder(prompt, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         raw = self.journal.read_text(encoding="utf-8")
         self.assertNotIn(prompt, raw)
         self.assertNotIn("ENV_SECRET_991ab", raw)
         self.assertNotIn("usage limit", raw)
-        self.assertNotIn(str(self.claude), raw)
+        self.assertNotIn(str(self.codex), raw)
         self.assertEqual(stat.S_IMODE(self.journal.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(self.journal.parent.stat().st_mode), 0o700)
 
@@ -476,7 +535,7 @@ class HermesCoderTest(unittest.TestCase):
         blocker = self.base / "not-a-directory"
         blocker.write_text("block", encoding="utf-8")
         env = self.env.copy()
-        env.update(HERMES_CODER_LOG=str(blocker / "journal.jsonl"), STUB_CLAUDE="capability", STUB_CODEX="success")
+        env.update(HERMES_CODER_LOG=str(blocker / "journal.jsonl"), STUB_CODEX="success")
         result = self.run_coder("--no-escalate", "task", env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr.count("journal disabled for this run"), 1)
@@ -500,16 +559,16 @@ class HermesCoderTest(unittest.TestCase):
         data_files = [path for path in files if path.name != "hermes-coder.jsonl.lock"]
         self.assertLessEqual(len(data_files), 3)
 
-    def test_circuit_skips_vendor_on_next_run_and_state_is_private(self):
+    def test_circuit_skips_codex_on_next_run_and_state_is_private(self):
         env1 = self.env.copy()
-        env1.update(STUB_CLAUDE="quota_stdout", STUB_CODEX="success")
+        env1["STUB_CODEX"] = "quota_stdout"
         first = self.run_coder("--lane", "fast", "task", env=env1)
-        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.returncode, 75, first.stderr)
         env2 = self.env.copy()
-        env2.update(STUB_CLAUDE="success", STUB_CODEX="success")
+        env2["STUB_CODEX"] = "success"
         second = self.run_coder("--lane", "fast", "task", env=env2)
-        self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual([c["vendor"] for c in self.calls()], ["claude", "codex", "codex"])
+        self.assertEqual(second.returncode, 75, second.stderr)
+        self.assertEqual([c["vendor"] for c in self.calls()], ["codex"])
         self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o600)
         self.assertIn("circuit is in cooldown", second.stderr)
 
@@ -528,17 +587,16 @@ class HermesCoderTest(unittest.TestCase):
         self.assertFalse(self.state.exists())
         self.assertEqual(self.calls(), [])
 
-    def test_read_only_tasks_preserve_vendor_selection_and_sandboxes(self):
+    def test_read_only_tasks_use_codex_read_only_sandboxes(self):
         planned = self.run_coder("--task", "plan", "--no-escalate", "question")
         inspected = self.run_coder("--task", "inspect", "--no-escalate", "question")
         self.assertEqual(planned.returncode, 0, planned.stderr)
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         calls = self.calls()
-        self.assertEqual([call["vendor"] for call in calls], ["claude", "codex"])
-        self.assertIn("--safe-mode", calls[0]["argv"])
-        self.assertIn("plan", calls[0]["argv"])
-        sandbox_index = calls[1]["argv"].index("-s")
-        self.assertEqual(calls[1]["argv"][sandbox_index + 1], "read-only")
+        self.assertEqual([call["vendor"] for call in calls], ["codex", "codex"])
+        for call in calls:
+            sandbox_index = call["argv"].index("-s")
+            self.assertEqual(call["argv"][sandbox_index + 1], "read-only")
 
     def test_final_output_only_codex_uses_only_the_last_completed_agent_message(self):
         env = self.env.copy()
@@ -579,10 +637,6 @@ class HermesCoderTest(unittest.TestCase):
             ("codex", "native_missing", "final_output_missing"),
             ("codex", "native_error", "final_output_error"),
             ("codex", "native_oversized", "final_output_oversized"),
-            ("claude", "native_malformed", "final_output_malformed"),
-            ("claude", "native_missing", "final_output_missing"),
-            ("claude", "native_error", "final_output_error"),
-            ("claude", "native_oversized", "final_output_oversized"),
         )
         for vendor, mode, reason in cases:
             with self.subTest(vendor=vendor, mode=mode):
@@ -599,37 +653,32 @@ class HermesCoderTest(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertIn(reason, result.stderr)
 
-    def test_final_output_only_extracts_claude_result_string(self):
-        secret = '{"lane":"normal","reason_code":"claude_result"}'
-        env = self.env.copy()
-        env.update(STUB_CLAUDE="native_success", STUB_CLAUDE_FINAL=secret)
+    def test_primary_claude_is_rejected_before_model_launch(self):
         result = self.run_coder(
-            "--task", "inspect", "--final-output-only", "--primary", "claude",
-            "--no-escalate", "--max-attempts", "1", "classify", env=env,
+            "--task", "inspect", "--primary", "claude", "inspect",
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, secret)
-        argv = self.calls()[0]["argv"]
-        output_index = argv.index("--output-format")
-        self.assertEqual(argv[output_index + 1], "json")
-        self.assertNotIn(secret, self.journal.read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("invalid choice", result.stderr)
+        self.assertIn("auto", result.stderr)
+        self.assertIn("codex", result.stderr)
+        self.assertEqual(self.calls(), [])
 
-    def test_final_output_only_fallback_emits_only_the_successful_attempt(self):
+    def test_final_output_only_escalation_emits_only_the_successful_attempt(self):
         env = self.env.copy()
         env.update(
-            STUB_CLAUDE="native_fail",
-            STUB_CODEX="native_success",
-            STUB_CLAUDE_FINAL="FAILED_ATTEMPT_ANSWER",
-            STUB_CODEX_FINAL="SUCCESSFUL_ATTEMPT_ANSWER",
+            STUB_CODEX_SEQUENCE=json.dumps(["native_fail", "native_success"]),
+            STUB_CODEX_FINAL_SEQUENCE=json.dumps(
+                ["FAILED_ATTEMPT_ANSWER", "SUCCESSFUL_ATTEMPT_ANSWER"]
+            ),
         )
         result = self.run_coder(
-            "--task", "review", "--final-output-only", "--primary", "claude",
-            "--no-escalate", "--max-attempts", "2", "review this", env=env,
+            "--task", "review", "--final-output-only", "--primary", "codex",
+            "--lane", "fast", "--max-attempts", "2", "review this", env=env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "SUCCESSFUL_ATTEMPT_ANSWER")
         self.assertNotIn("FAILED_ATTEMPT_ANSWER", result.stdout)
-        self.assertEqual([call["vendor"] for call in self.calls()], ["claude", "codex"])
+        self.assertEqual([call["vendor"] for call in self.calls()], ["codex", "codex"])
 
     def test_final_output_only_is_restricted_to_inspect_and_review(self):
         for args in (
@@ -692,25 +741,35 @@ class HermesCoderTest(unittest.TestCase):
         config = self.gate_file([{"name": "repair", "argv": [str(check)]}])
         repair_file = self.base / "repaired"
         env = self.env.copy()
-        env.update(GATE_REPAIRGATE="repair_check", REPAIR_FILE=str(repair_file), STUB_CODEX="repair")
-        result = self.run_coder("--no-escalate", "--gate-file", str(config), "task", env=env)
+        env.update(
+            GATE_REPAIRGATE="repair_check",
+            REPAIR_FILE=str(repair_file),
+            STUB_CODEX_SEQUENCE=json.dumps(["success", "repair"]),
+        )
+        result = self.run_coder(
+            "--lane", "fast", "--max-attempts", "2",
+            "--gate-file", str(config), "task", env=env,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([c["vendor"] for c in self.calls()], ["claude", "codex"])
+        self.assertEqual([c["vendor"] for c in self.calls()], ["codex", "codex"])
         self.assertTrue(repair_file.exists())
 
     def test_gate_output_is_not_given_to_next_model_or_journal(self):
         gate = self.gate("rawgate")
         config = self.gate_file([{"name": "raw", "argv": [str(gate)]}])
-        raw_marker = "GATE_RAW_MARKER_18a2"
+        output_canary = "GATE_RAW_OUTPUT_CANARY_18a2"
         env = self.env.copy()
-        env.update(GATE_RAWGATE="fail", GATE_RAW_OUTPUT=raw_marker)
-        result = self.run_coder("--no-escalate", "--gate-file", str(config), "task", env=env)
+        env.update(GATE_RAWGATE="fail", GATE_RAW_OUTPUT=output_canary)
+        result = self.run_coder(
+            "--lane", "fast", "--max-attempts", "2",
+            "--max-quality-failures", "2", "--gate-file", str(config), "task", env=env,
+        )
         self.assertEqual(result.returncode, 65, result.stderr)
         calls = self.calls()
         self.assertEqual(len(calls), 2)
-        self.assertNotIn(raw_marker, " ".join(calls[1]["argv"]))
+        self.assertNotIn(output_canary, " ".join(calls[1]["argv"]))
         self.assertIn("status 'failed' with exit code 7", " ".join(calls[1]["argv"]))
-        self.assertNotIn(raw_marker, self.journal.read_text(encoding="utf-8"))
+        self.assertNotIn(output_canary, self.journal.read_text(encoding="utf-8"))
 
     def test_gate_failure_chain_exhaustion_returns_65(self):
         gate = self.gate("alwaysfail")
@@ -719,7 +778,7 @@ class HermesCoderTest(unittest.TestCase):
         env["GATE_ALWAYSFAIL"] = "fail"
         result = self.run_coder("--no-escalate", "--gate-file", str(config), "task", env=env)
         self.assertEqual(result.returncode, 65, result.stderr)
-        self.assertEqual(len(self.calls()), 2)
+        self.assertEqual(len(self.calls()), 1)
 
     def test_max_quality_failures_bounds_repairs(self):
         gate = self.gate("alwaysfail")
@@ -755,7 +814,7 @@ class HermesCoderTest(unittest.TestCase):
         passing = self.gate("stablegate")
         config = self.gate_file([{"name": "stable", "argv": [str(passing)]}])
         env = self.env.copy()
-        env.update(STUB_CLAUDE="mutate_config", MUTATE_GATE_FILE=str(config))
+        env.update(STUB_CODEX="mutate_config", MUTATE_GATE_FILE=str(config))
         result = self.run_coder("--gate-file", str(config), "task", env=env)
         self.assertEqual(result.returncode, 70, result.stderr)
         self.assertIn("integrity", result.stderr.lower())
@@ -814,6 +873,26 @@ class HermesCoderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 124, result.stderr)
         record = next(r for r in self.records() if r["event"] == "gates_only")
         self.assertEqual(record["reason_id"], "wall_timeout")
+
+    def test_gate_integrity_hash_obeys_the_original_invocation_deadline(self):
+        oversized = self.base / "oversized-gate"
+        with oversized.open("wb") as handle:
+            handle.truncate(256 * 1024 * 1024)
+        oversized.chmod(0o755)
+        config = self.gate_file([
+            {"name": "oversized", "argv": [str(oversized)]}
+        ])
+        started = time.monotonic()
+        result = self.run_coder(
+            "--gates-only",
+            "--gate-file", str(config),
+            "--wall-timeout", "0.05",
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertIn("gate integrity snapshot", result.stderr.lower())
+        self.assertFalse(self.gate_invocations.exists())
 
     def test_gates_only_missing_executable_is_70(self):
         config = self.gate_file([{"name": "missing", "argv": [str(self.base / "does-not-exist")]}])

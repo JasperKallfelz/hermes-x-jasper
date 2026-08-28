@@ -1,6 +1,10 @@
 """Tests for scripts/merge_config.py."""
 import sys
 import unittest
+from unittest import mock
+import datetime
+import os
+import stat
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -132,17 +136,73 @@ class TestApply(unittest.TestCase):
             )
             self.assertEqual(rc, 2)
 
+    def test_replacement_and_backup_preserve_private_source_modes_under_umask(self):
+        for source_mode in (0o600, 0o640):
+            with self.subTest(source_mode=oct(source_mode)), TemporaryDirectory() as td:
+                base, overlay = self._files(td)
+                base.chmod(source_mode)
+                old_umask = os.umask(0o022)
+                try:
+                    rc = merge_config.main(
+                        ["--base", str(base), "--overlay", str(overlay), "--apply"]
+                    )
+                finally:
+                    os.umask(old_umask)
+                self.assertEqual(rc, 0)
+                backup = next(Path(td).glob("config.yaml.bak-*"))
+                self.assertEqual(stat.S_IMODE(base.stat().st_mode), source_mode)
+                self.assertEqual(stat.S_IMODE(backup.stat().st_mode), source_mode)
+
+    def test_fixed_clock_backups_use_exclusive_collision_counter(self):
+        class FixedDateTime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 8, 28, 12, 0, 0, tzinfo=tz)
+
+        with TemporaryDirectory() as td:
+            source = Path(td) / "config.yaml"
+            source.write_text("one: 1\n", encoding="utf-8")
+            source.chmod(0o600)
+            with (
+                mock.patch.object(merge_config._dt, "datetime", FixedDateTime),
+                mock.patch.object(merge_config.time, "time_ns", return_value=123456789),
+            ):
+                first = merge_config.backup(source)
+                source.write_text("two: 2\n", encoding="utf-8")
+                second = merge_config.backup(source)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.read_text(), "one: 1\n")
+            self.assertEqual(second.read_text(), "two: 2\n")
+            self.assertTrue(second.name.endswith("-1"))
+
+    def test_new_config_is_private_even_with_permissive_umask(self):
+        with TemporaryDirectory() as td:
+            base = Path(td) / "new.yaml"
+            overlay = Path(td) / "overlay.yaml"
+            overlay.write_text("safe: true\n", encoding="utf-8")
+            old_umask = os.umask(0)
+            try:
+                rc = merge_config.main(
+                    ["--base", str(base), "--overlay", str(overlay), "--apply"]
+                )
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(rc, 0)
+            self.assertEqual(stat.S_IMODE(base.stat().st_mode), 0o600)
+
 
 class TestShippedOverlay(unittest.TestCase):
     def test_repo_overlay_is_valid_yaml_mapping(self):
         overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
         data = merge_config.load_yaml(overlay)
-        for section in ("memory", "delegation", "browser", "code_execution",
-                        "streaming", "tts", "stt"):
+        for section in ("memory", "context", "delegation", "browser",
+                        "code_execution", "streaming", "tts", "stt", "voice"):
             self.assertIn(section, data, f"{section} missing from config.example.yaml")
 
     def test_overlay_has_no_non_upstream_second_brain_block(self):
-        # `second_brain:` is not an upstream Hermes config section; v0.19 does not
+        # `second_brain:` is not an upstream Hermes config section; v0.20.6 does not
         # retain unknown top-level keys. It must not leak into the Hermes overlay.
         overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
         data = merge_config.load_yaml(overlay)
@@ -154,11 +214,66 @@ class TestShippedOverlay(unittest.TestCase):
         self.assertEqual(data["memory"]["provider"], "")
         self.assertEqual(data["delegation"]["api_key"] if "api_key" in data["delegation"] else "", "")
 
-    def test_overlay_uses_v019_orchestration_defaults(self):
+    def test_overlay_contains_only_the_reviewed_v0206_leaf_keys(self):
         overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
         data = merge_config.load_yaml(overlay)
-        # v0.19: max_concurrent_children is the single unified cap; the deprecated
-        # max_async_children is gone (dropped by `hermes config migrate`).
+
+        def leaves(value, prefix=""):
+            found = set()
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else key
+                if isinstance(child, dict):
+                    found.update(leaves(child, path))
+                else:
+                    found.add(path)
+            return found
+
+        self.assertEqual(
+            leaves(data),
+            {
+                "memory.memory_enabled",
+                "memory.user_profile_enabled",
+                "memory.write_approval",
+                "memory.provider",
+                "context.engine",
+                "delegation.orchestrator_enabled",
+                "delegation.model",
+                "delegation.provider",
+                "delegation.max_concurrent_children",
+                "delegation.max_spawn_depth",
+                "delegation.subagent_auto_approve",
+                "browser.engine",
+                "browser.cdp_url",
+                "browser.auto_launch_local_cdp",
+                "browser.allow_private_urls",
+                "browser.command_timeout",
+                "code_execution.mode",
+                "code_execution.timeout",
+                "code_execution.max_tool_calls",
+                "streaming.enabled",
+                "streaming.transport",
+                "streaming.edit_interval",
+                "tts.provider",
+                "tts.edge.voice",
+                "tts.providers.jarvis.type",
+                "tts.providers.jarvis.command",
+                "tts.providers.jarvis.output_format",
+                "tts.providers.jarvis.timeout",
+                "tts.providers.jarvis.voice_compatible",
+                "stt.enabled",
+                "stt.provider",
+                "stt.local.model",
+                "stt.local.language",
+                "voice.auto_tts",
+                "voice.max_recording_seconds",
+            },
+        )
+
+    def test_overlay_matches_v0206_schema_and_intentional_overrides(self):
+        overlay = Path(__file__).resolve().parents[1] / "config.example.yaml"
+        data = merge_config.load_yaml(overlay)
+        # v0.20.6: max_concurrent_children is the single unified cap; the
+        # deprecated max_async_children is gone (`hermes config migrate` drops it).
         self.assertEqual(
             data["delegation"],
             {
@@ -172,8 +287,8 @@ class TestShippedOverlay(unittest.TestCase):
         )
         self.assertNotIn("max_async_children", data["delegation"])
         self.assertEqual(data["code_execution"]["timeout"], 300)
-        self.assertEqual(data["code_execution"]["max_tool_calls"], 1000)
-        # v0.19 code_execution.mode accepts only "project" or "strict".
+        self.assertEqual(data["code_execution"]["max_tool_calls"], 50)
+        # v0.20.6 code_execution.mode accepts only "project" or "strict".
         self.assertIn(data["code_execution"]["mode"], ("project", "strict"))
 
 

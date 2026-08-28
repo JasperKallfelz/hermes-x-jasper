@@ -1,4 +1,5 @@
 # Patch files are verbatim upstream git diffs (hash-pinned). Do not apply the
 # repo's whitespace rules to them — `git diff --check` and `git apply --whitespace`
 # must treat their contents as opaque data, not source to be reformatted.
-patches/*.patch -whitespace
+patches/*.patch -whitespace -text
+modules/pi-runtime/*.patch -whitespace -text
