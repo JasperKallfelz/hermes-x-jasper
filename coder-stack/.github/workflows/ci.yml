@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check Deep Chat dependency
+        run: jq --version
+      - name: Check committed-range whitespace
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -eu
+          head_sha=$(git rev-parse HEAD)
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base_sha=$PR_BASE_SHA
+            git cat-file -e "${base_sha}^{commit}" 2>/dev/null || \
+              git fetch --no-tags origin "$base_sha"
+            range_start=$(git merge-base "$base_sha" "$head_sha")
+            git diff --check "${range_start}...${head_sha}"
+          else
+            before_sha=$PUSH_BEFORE_SHA
+            nonzero=$(printf '%s' "$before_sha" | tr -d 0)
+            if [ -z "$before_sha" ] || [ -z "$nonzero" ]; then
+              empty_tree=$(git hash-object -t tree /dev/null)
+              git diff --check "$empty_tree" "$head_sha"
+            else
+              git cat-file -e "${before_sha}^{commit}" 2>/dev/null || \
+                git fetch --no-tags origin "$before_sha"
+              git diff --check "${before_sha}...${head_sha}"
+            fi
+          fi
+      - name: Run tracked policy gates
+        run: >-
+          bin/hermes-coder
+          --gates-only
+          --gate-file .hermes-gates.json
+          --workdir .
+          --no-journal

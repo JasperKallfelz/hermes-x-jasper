@@ -22,10 +22,10 @@ memory:
   memory_enabled: true
   user_profile_enabled: true
   write_approval: false          # true = every memory write asks first
-  provider: ""                   # "" | holographic | mem0 | hindsight | openviking | retaindb
+  provider: ""                   # "" | openviking | mem0 | hindsight | holographic | retaindb | byterover
 
 # NOTE: the optional local Second Brain starter is NOT configured here. It is
-# not an upstream Hermes config section, and v0.19 does not retain unknown
+# not an upstream Hermes config section, and v0.20.6 does not retain unknown
 # top-level keys (`hermes config migrate` drops them). Configure and run it from
 # its own manifest instead — see ./second-brain/README.md.
 
@@ -42,12 +42,12 @@ delegation:
   orchestrator_enabled: true
   model: ""                      # e.g. "google/gemini-3-flash-preview"
   provider: ""                   # e.g. "openrouter"
-  # In v0.19 this is the single, unified concurrency cap: it bounds BOTH parallel
-  # children per batch AND concurrent background delegation units. It replaces the
-  # old, now-deprecated delegation.max_async_children (dropped by `hermes config
-  # migrate`); do not add a separate async limit here.
+  # In v0.20.6 this is the single, unified concurrency cap: it bounds BOTH
+  # parallel children per batch AND concurrent background delegation units. The
+  # upstream default is 10; this starter deliberately uses 8. It replaces the
+  # deprecated delegation.max_async_children (dropped by `hermes config migrate`).
   max_concurrent_children: 8
-  max_spawn_depth: 3             # how many levels deep a child may itself delegate (minimum 1)
+  max_spawn_depth: 3             # deliberate override; upstream default is 1 (flat)
   subagent_auto_approve: false   # keep human approval in the loop
 
 # Browser. Pointing cdp_url at a loopback DevTools endpoint makes Hermes drive
@@ -68,9 +68,9 @@ browser:
 # guardrail; a single long test gate gets a larger gate timeout in the runner
 # instead of raising this.
 code_execution:
-  mode: project                  # project | strict  (v0.19 accepts only these two)
+  mode: project                  # project | strict  (v0.20.6 accepts only these two)
   timeout: 300                   # seconds; short-orchestration guardrail, not a build budget
-  max_tool_calls: 1000
+  max_tool_calls: 50             # v0.20.6 default
 
 # Token-by-token replies on chat platforms.
 streaming:
@@ -103,7 +103,7 @@ tts:
 # few cloud providers; there is no command-provider hook for STT.
 stt:
   enabled: true
-  provider: local                # local | openai | groq | mistral | elevenlabs
+  provider: local                # local | openai | groq | mistral | xai | elevenlabs | deepinfra
   local:
     model: base                  # tiny | base | small | medium | large-v3
     language: ""                 # "" = auto-detect

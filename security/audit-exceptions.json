@@ -1,0 +1,415 @@
+{
+  "schema": 1,
+  "current_line_exceptions": [
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "private-key",
+      "line_sha256": "9fbc8cb556ab0216af48b38cda5a078850cb5945d336d17f36a92996e190d864",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    },
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "authorization-header",
+      "line_sha256": "82eb32b54dc73ca079eabd516977ef0d05b31de8837e7d0bb63c24ad87cfba93",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    },
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "9bf36511ea2de1fd1540f3a6d7a6274a7af8f2179292ac91c98c47508cb6b413",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    },
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "discord-snowflake",
+      "line_sha256": "4018655e173100d4db0507c7eac23e9f44a3541863874e8817aa08d53492c702",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    },
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-group-id",
+      "line_sha256": "c4facfc072be317c156e0604059c82b20320a6acccab322c10038f57c35d4a58",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    },
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "10052da66a1c326745e2fc6776ef6e34bbb567da215820b9d85569f77ded83ca",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    },
+    {
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "87a30950ad3c5e9ad134d46f467708a9b8d39a044125fd8899f6d96fa431a5f8",
+      "reason": "Reviewed static scanner self-test vector with a trailing line marker."
+    }
+  ],
+  "history_line_exceptions": [
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "private-key",
+      "line_sha256": "b7a737c09eb29e93de5f7672dba15a6e7ae1a7d6db93d4c1e46b1181d71395a6",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "ea378c7a6b915ab602943c7908050dc9e7114770fa347d9dbd58a30103af219d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "github-token",
+      "line_sha256": "e9605908f0208b3baded3201e771891a1d4393f514d2f330ced1b1d5a9d01028",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "google-key",
+      "line_sha256": "a1d476085fbde08a434beb986b24617f9c1201f79080fa5422381306fe2a4ed0",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-bot-token",
+      "line_sha256": "a70ac0178d6f3b6009df9df40358a5c727d26683b1c3d7ea12b25cb357442737",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "authorization-header",
+      "line_sha256": "af8dba8b972bfe52ea855229c6b2db7883e67050f076ba5bdef98001b6c51ed9",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "macos-home",
+      "line_sha256": "64a029f9e34847710f22867eb05f5fb1d3c2b65a789cf187b01ea37ddffab511",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "linux-home",
+      "line_sha256": "48fb753aed3ea24ec21293d13b28c4d0584e6f42fb4a846c7917c6b895375cb6",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "edd41640bf8c2eb418e9820f65c3e3cccbebdacbf70e7b6c7fd9938a2cf534d8",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "discord-snowflake",
+      "line_sha256": "bdd52d07233fe0f450e30332f8148af4623840c920b5d5c7f53f564b300fa07d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-group-id",
+      "line_sha256": "b273d76fca2854e000e4479153dbe9436aabdc07aded143f9dde270884f74915",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "ecea5baecd19da7ea9d03edd7a6dbd271649513341efa62f6b9b2ca632c0306d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "c8438c3c2ff42d97128918b00b79414952f50ecefa3717764804372613748e24",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "587df396ed8a8ba37fedb1db4e8e2f73ec86d4413c3576999c8b4878a09de029",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "b39954caad28491f391a3cff150db9da9aa7f1ef",
+      "path": "tests/test_audit_public.py",
+      "rule": "github-token",
+      "line_sha256": "da1f894e5e678de4937ed7b79408183370b7df67ab36dede4dfadddfa1ad5307",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "private-key",
+      "line_sha256": "b7a737c09eb29e93de5f7672dba15a6e7ae1a7d6db93d4c1e46b1181d71395a6",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "ea378c7a6b915ab602943c7908050dc9e7114770fa347d9dbd58a30103af219d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "github-token",
+      "line_sha256": "e9605908f0208b3baded3201e771891a1d4393f514d2f330ced1b1d5a9d01028",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "google-key",
+      "line_sha256": "a1d476085fbde08a434beb986b24617f9c1201f79080fa5422381306fe2a4ed0",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-bot-token",
+      "line_sha256": "a70ac0178d6f3b6009df9df40358a5c727d26683b1c3d7ea12b25cb357442737",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "authorization-header",
+      "line_sha256": "af8dba8b972bfe52ea855229c6b2db7883e67050f076ba5bdef98001b6c51ed9",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "252b99be8c87f8b69f2fa4b47eb3c1f86faffe2de55e7c0c182e5290c1664e51",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "discord-snowflake",
+      "line_sha256": "bdd52d07233fe0f450e30332f8148af4623840c920b5d5c7f53f564b300fa07d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-group-id",
+      "line_sha256": "b273d76fca2854e000e4479153dbe9436aabdc07aded143f9dde270884f74915",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "ecea5baecd19da7ea9d03edd7a6dbd271649513341efa62f6b9b2ca632c0306d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "c8438c3c2ff42d97128918b00b79414952f50ecefa3717764804372613748e24",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "587df396ed8a8ba37fedb1db4e8e2f73ec86d4413c3576999c8b4878a09de029",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "3103867bc669142bb9c30be404b554f6ae9e9488",
+      "path": "tests/test_audit_public.py",
+      "rule": "github-token",
+      "line_sha256": "da1f894e5e678de4937ed7b79408183370b7df67ab36dede4dfadddfa1ad5307",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "private-key",
+      "line_sha256": "9fbc8cb556ab0216af48b38cda5a078850cb5945d336d17f36a92996e190d864",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "052008132c5ec9d1aff171c7dab80ef0700af74c1dc2627774c7e7b11470f27b",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "github-token",
+      "line_sha256": "e6a3b4d39c2c3ec538825536e2359dac38b6437282e363187e1c8f40ad9ec0b6",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "google-key",
+      "line_sha256": "68c974f3b0b612a2336c7dd2fc41d2d929b840df2989561deee053bd40e638f9",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-bot-token",
+      "line_sha256": "a1490a51dd255fa1bfd869f93a9483db5f8468cb091c6b0ca501a9d50630417b",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "authorization-header",
+      "line_sha256": "82eb32b54dc73ca079eabd516977ef0d05b31de8837e7d0bb63c24ad87cfba93",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "9bf36511ea2de1fd1540f3a6d7a6274a7af8f2179292ac91c98c47508cb6b413",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "discord-snowflake",
+      "line_sha256": "4018655e173100d4db0507c7eac23e9f44a3541863874e8817aa08d53492c702",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-group-id",
+      "line_sha256": "c4facfc072be317c156e0604059c82b20320a6acccab322c10038f57c35d4a58",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "ecea5baecd19da7ea9d03edd7a6dbd271649513341efa62f6b9b2ca632c0306d",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "10052da66a1c326745e2fc6776ef6e34bbb567da215820b9d85569f77ded83ca",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "87a30950ad3c5e9ad134d46f467708a9b8d39a044125fd8899f6d96fa431a5f8",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "38c30407b6ed3d8de8887010c11cb68026e3392b",
+      "path": "tests/test_audit_public.py",
+      "rule": "github-token",
+      "line_sha256": "cf7595eefdd8aeb67f9b2388f9c4264becfca2ef3dcf90803bb53489051c535b",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "private-key",
+      "line_sha256": "9fbc8cb556ab0216af48b38cda5a078850cb5945d336d17f36a92996e190d864",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "authorization-header",
+      "line_sha256": "82eb32b54dc73ca079eabd516977ef0d05b31de8837e7d0bb63c24ad87cfba93",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "9bf36511ea2de1fd1540f3a6d7a6274a7af8f2179292ac91c98c47508cb6b413",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "discord-snowflake",
+      "line_sha256": "4018655e173100d4db0507c7eac23e9f44a3541863874e8817aa08d53492c702",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "telegram-group-id",
+      "line_sha256": "c4facfc072be317c156e0604059c82b20320a6acccab322c10038f57c35d4a58",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "email",
+      "line_sha256": "10052da66a1c326745e2fc6776ef6e34bbb567da215820b9d85569f77ded83ca",
+      "reason": "Fake scanner self-test in immutable public history."
+    },
+    {
+      "commit": "d5e107f965c4bcb3a3989e620f5d60770ad009a8",
+      "path": "tests/test_audit_public.py",
+      "rule": "openai-key",
+      "line_sha256": "87a30950ad3c5e9ad134d46f467708a9b8d39a044125fd8899f6d96fa431a5f8",
+      "reason": "Fake scanner self-test in immutable public history."
+    }
+  ],
+  "metadata_exceptions": [
+    {
+      "commit": "481e4163e0d38381c9a1f43a02b21f4e084b5e15",
+      "field": "author.email",
+      "rule": "email",
+      "value_sha256": "01f1d314d0b0f22a5bc915751067196d4a16e25c1b42f1b997fa9607a78da243",
+      "reason": "Pre-existing public disclosure reviewed without rewriting published history."
+    },
+    {
+      "commit": "2d2506a10acd556015bee615db6ab1667a6151fc",
+      "field": "author.email",
+      "rule": "email",
+      "value_sha256": "01f1d314d0b0f22a5bc915751067196d4a16e25c1b42f1b997fa9607a78da243",
+      "reason": "Pre-existing public disclosure reviewed without rewriting published history."
+    },
+    {
+      "commit": "64535eaa031ebb1af4d60dc4f60011f8761edc90",
+      "field": "author.email",
+      "rule": "email",
+      "value_sha256": "01f1d314d0b0f22a5bc915751067196d4a16e25c1b42f1b997fa9607a78da243",
+      "reason": "Pre-existing public disclosure reviewed without rewriting published history."
+    },
+    {
+      "commit": "6b0b0cd27d19322727b57e0a241b84026dfd2a20",
+      "field": "author.email",
+      "rule": "email",
+      "value_sha256": "01f1d314d0b0f22a5bc915751067196d4a16e25c1b42f1b997fa9607a78da243",
+      "reason": "Pre-existing public disclosure reviewed without rewriting published history."
+    }
+  ]
+}

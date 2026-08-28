@@ -26,8 +26,11 @@ import argparse
 import datetime as _dt
 import difflib
 import os
+import shutil
+import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -78,29 +81,67 @@ def dump_yaml(data: dict) -> str:
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
 
 
-def write_atomic(path: Path, content: str) -> None:
-    """Write *content* to *path* without ever leaving a truncated file behind."""
+def _source_mode(path: Path) -> int:
+    """Return the source mode, or a private default for a new config."""
+    if not path.exists():
+        return 0o600
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{path}: expected a regular file, not a link or special file")
+    return stat.S_IMODE(metadata.st_mode)
+
+
+def write_atomic(path: Path, content: str, mode: int | None = None) -> None:
+    """Write *content* atomically while preserving or narrowing permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    selected_mode = _source_mode(path) if mode is None else mode
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
+        os.fchmod(fd, selected_mode)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
+        os.chmod(path, selected_mode)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
 
 
 def backup(path: Path) -> Path | None:
-    """Copy *path* to a timestamped .bak sibling. Returns the backup path."""
+    """Create an exclusive, collision-safe backup with the source mode."""
     if not path.exists():
         return None
+    mode = _source_mode(path)
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = path.with_suffix(path.suffix + f".bak-{stamp}")
-    target.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-    return target
+    nonce = time.time_ns()
+    counter = 0
+    while True:
+        suffix = f".bak-{stamp}-{nonce}"
+        if counter:
+            suffix += f"-{counter}"
+        target = path.with_name(path.name + suffix)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        except FileExistsError:
+            counter += 1
+            continue
+        try:
+            os.fchmod(fd, mode)
+            with path.open("rb") as source, os.fdopen(fd, "wb") as destination:
+                shutil.copyfileobj(source, destination)
+                destination.flush()
+                os.fsync(destination.fileno())
+            os.chmod(target, mode)
+            return target
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            target.unlink(missing_ok=True)
+            raise
 
 
 def diff(before: str, after: str, name: str) -> str:
@@ -151,8 +192,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nDry run — nothing written. Re-run with --apply to update {base_path}.")
         return 0
 
-    saved = backup(base_path)
-    write_atomic(base_path, after)
+    try:
+        mode = _source_mode(base_path)
+        saved = backup(base_path)
+        write_atomic(base_path, after, mode=mode)
+    except (OSError, ValueError) as exc:
+        print(f"failed to write config safely: {exc}", file=sys.stderr)
+        return 2
     if saved:
         print(f"backup written: {saved}")
     print(f"merged ({args.strategy}): {base_path}")

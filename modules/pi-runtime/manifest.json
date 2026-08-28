@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "module": "hermes-pi-runtime",
+  "upstream": {
+    "repository": "https://github.com/NousResearch/hermes-agent.git",
+    "base_commit": "306db2776c6b6f1acc85c31c4dabba3263f0e9fd",
+    "base_tree": "ea6f4079a6366c60be25a75c7561b790cba89a9c",
+    "feature_repository": "https://github.com/JasperKallfelz/hermes-agent.git",
+    "feature_commit": "c1093d23837bab98013bc9929d0d2679416601e5",
+    "feature_tree": "0d86bd37330042b20a4d1b788a7dd61041170916"
+  },
+  "patch": {
+    "file": "hermes-pi.patch",
+    "bytes": 775861,
+    "sha256": "d1c3f99a7ad5f0028ebd813cd0553a524c0c3db1bc4d39a7fe4aff13f03a3e75"
+  },
+  "runtime": {
+    "pi_version": "0.84.3",
+    "immutable_image_id": "sha256:e89f45110e9277902bafbf49009e842bc9e38180e668fea8a6ff3dcdb2dd2cdf",
+    "target_platform": "linux/arm64"
+  },
+  "toolchain": {
+    "python": "3.11.15",
+    "uv": "0.9.28",
+    "node": "22.23.2",
+    "npm": "11.17.0",
+    "docker_engine_ci": "28.0.4",
+    "docker_buildx_ci": "0.36.1"
+  },
+  "verified_evidence": {
+    "offline_release_suite": {
+      "collected": 1419,
+      "passed": 1419,
+      "failures": 0,
+      "skips": 0,
+      "retries": 0
+    },
+    "reproducible_linux_arm64_builds": {
+      "no_cache_builds": 2,
+      "matching_image_ids": 2
+    },
+    "docker_containment_egress_e2e": {
+      "cases": 5,
+      "passed": 5,
+      "failures": 0
+    },
+    "independent_review": {
+      "status": "READY",
+      "p0": 0,
+      "p1": 0,
+      "p2": 0
+    },
+    "authenticated_model_e2e": {
+      "current": false,
+      "status": "GAP",
+      "reason": "The previously available Pi OAuth had expired; no authenticated lane or credential material is included."
+    }
+  }
+}

@@ -13,10 +13,13 @@ real-looking secrets. The legacy ``audit:allow-file`` text is tested below;
 whole-file skipping is unsupported.
 """
 import random
+import json
+import os
 import string
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -117,22 +120,41 @@ class TestIgnoresPlaceholders(unittest.TestCase):
     def test_example_email(self):
         self.assertEqual(rules("email: user@example.com"), set())
 
+    def test_escaped_pytest_decorator_is_not_an_email(self):
+        decorator = "@" + "pytest.mark.skip"
+        self.assertEqual(rules(r'"import pytest\n\n' + decorator + r'(reason=\'fixture\')"'), set())
+        self.assertIn("email", rules("contact n" + decorator))
+
     def test_generic_home_paths(self):
         self.assertEqual(rules("/" + "Users" + "/you/hermes-agent"), set())
         self.assertEqual(rules("/" + "home" + "/user/.hermes"), set())
 
+    def test_hardened_container_home_is_not_a_host_path(self):
+        container_home = "/" + "home" + "/pi"
+        self.assertEqual(
+            rules(f'"--tmpfs", "{container_home}:rw,nosuid,nodev,size=32m"'), set()
+        )
+        self.assertEqual(rules(f'"--env", "HOME={container_home}"'), set())
+        self.assertIn("linux-home", rules(f"log: {container_home}/.ssh/config"))
+
     def test_repeated_digit_fixture_ids(self):
         self.assertEqual(rules("DISCORD_VOICE_AUTOJOIN_GUILD_ID=000000000000000000"), set())
 
-    def test_allow_marker_suppresses(self):
+    def test_scan_text_does_not_trust_an_inline_allow_marker(self):
         token = _fixture_token("sk-proj-", 32, "suppress")
-        self.assertEqual(rules("key = " + token + "  # audit:allow"), set())
+        self.assertEqual(rules("key = " + token + "  # audit:allow"), {"openai-key"})
 
     def test_short_numbers_are_not_ids(self):
         self.assertEqual(rules("timeout: 300\nport: 9222\nsample_rate: 24000"), set())
 
 
 class TestFileWalk(unittest.TestCase):
+    def test_single_file_root_is_scanned(self):
+        with TemporaryDirectory() as td:
+            path = Path(td) / "manifest.json"
+            path.write_text("safe\n", encoding="utf-8")
+            self.assertEqual(list(audit_public.iter_files(path, tracked_only=False)), [path])
+
     def test_skips_git_dir(self):
         with TemporaryDirectory() as td:
             root = Path(td)
@@ -198,43 +220,161 @@ class TestHistoryAllowances(unittest.TestCase):
         self.assertEqual(audit_public._marker_stripped_line(allowed), "value = " + token)
         self.assertIsNone(audit_public._marker_stripped_line("value = something-else"))
 
-    def test_old_scanner_self_test_recognition_is_path_and_rule_scoped(self):
-        fixture = (
-            'self.assertIn("macos-home", rules("cd '
-            + "/"
-            + 'Users/localaccount/hermes"))'
-        )
-        path = Path("tests/test_audit_public.py")
-        self.assertTrue(audit_public._is_historical_self_test_fixture(path, fixture, "macos-home"))
-        self.assertFalse(audit_public._is_historical_self_test_fixture(path, fixture, "email"))
-        self.assertFalse(
-            audit_public._is_historical_self_test_fixture(Path("src/example.py"), fixture, "macos-home")
-        )
+    def test_current_marker_requires_exact_inventory_fingerprint(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            path = root / "fixture.py"
+            line = "path = " + "/" + "Users/localaccount/data  # audit:allow"
+            path.write_text(line + "\n", encoding="utf-8")
+            manifest = root / "exceptions.json"
+            manifest.write_text(json.dumps({
+                "schema": 1,
+                "current_line_exceptions": [{
+                    "path": "fixture.py", "rule": "macos-home",
+                    "line_sha256": audit_public.fingerprint(line),
+                }],
+                "history_line_exceptions": [],
+                "metadata_exceptions": [],
+            }), encoding="utf-8")
+            exceptions = audit_public.Exceptions(manifest)
+            self.assertEqual(audit_public.scan_current(root, [], exceptions, False), 0)
+            path.write_text(line.replace("data", "changed") + "\n", encoding="utf-8")
+            exceptions = audit_public.Exceptions(manifest)
+            self.assertGreater(audit_public.scan_current(root, [], exceptions, False), 0)
 
-    def test_history_recognizer_covers_multiline_and_e2e_fixtures(self):
-        path = Path("tests/test_audit_public.py")
-        # b) a bare rules(...) fixture split onto its own line (older telegram vector).
-        # The recognizer keys on the line SHAPE, not the token, so build it at runtime.
-        telegram = '            rules("TELEGRAM_BOT_TOKEN=7284910356:' + _fixture_token("", 30, "hist-tg") + '")'
-        self.assertTrue(
-            audit_public._is_historical_self_test_fixture(path, telegram, "telegram-bot-token")
-        )
-        # c) the end-to-end leak.py fixture the leak test writes
-        e2e = '            (Path(td) / "leak.py").write_text(\'KEY = "' + _fixture_token("ghp_", 36, "hist-e2e") + '"\\n\')'
-        self.assertTrue(audit_public._is_historical_self_test_fixture(path, e2e, "github-token"))
-        # still narrow: same shapes in any OTHER path are NOT grandfathered
-        self.assertFalse(
-            audit_public._is_historical_self_test_fixture(Path("prod/config.py"), telegram, "telegram-bot-token")
-        )
-        self.assertFalse(
-            audit_public._is_historical_self_test_fixture(Path("prod/seed.py"), e2e, "github-token")
-        )
-        # and an ordinary assignment in this file is NOT auto-grandfathered
-        self.assertFalse(
-            audit_public._is_historical_self_test_fixture(
-                path, '        api_key = "' + _fixture_token("", 20, "neg-assign") + '"', "aws-key"
+    def test_history_hard_fails_outside_git_and_on_empty_history(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(
+                audit_public.scan_history(root, [], audit_public.Exceptions(None)), 1
             )
-        )
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            self.assertEqual(
+                audit_public.scan_history(root, [], audit_public.Exceptions(None)), 1
+            )
+
+    def test_rev_list_command_failure_is_fatal(self):
+        failed = subprocess.CompletedProcess(["git", "rev-list"], 128, "", "failed")
+        with (
+            mock.patch.object(audit_public, "_is_git_worktree", return_value=True),
+            mock.patch.object(audit_public, "_git", return_value=failed),
+        ):
+            self.assertEqual(
+                audit_public.scan_history(Path("."), [], audit_public.Exceptions(None)), 1
+            )
+
+    def test_metadata_exception_is_commit_field_rule_and_value_bound(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+            email = "published.account" + "@" + "company.co"
+            env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL=email,
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+            subprocess.run(["git", "-C", str(root), "add", "safe.txt"], check=True, env=env)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "safe"], check=True, env=env)
+            commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            manifest = root / "exceptions.json"
+            payload = {
+                "schema": 1,
+                "current_line_exceptions": [],
+                "history_line_exceptions": [],
+                "metadata_exceptions": [{
+                    "commit": commit, "field": "author.email", "rule": "email",
+                    "value_sha256": audit_public.fingerprint(email),
+                    "reason": "Synthetic immutable test fixture.",
+                }],
+            }
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            exceptions = audit_public.Exceptions(manifest)
+            self.assertEqual(audit_public.scan_history(root, [], exceptions), 0)
+            payload["metadata_exceptions"][0]["field"] = "committer.email"
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            exceptions = audit_public.Exceptions(manifest)
+            self.assertGreater(audit_public.scan_history(root, [], exceptions), 0)
+
+    def test_history_exception_is_commit_path_rule_and_line_hash_bound(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+            line = "cache = " + "/" + "Users/localaccount/cache"
+            fixture = root / "fixture.txt"
+            fixture.write_text(line + "\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "fixture.txt"], check=True, env=env)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "fixture"], check=True, env=env)
+            commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            fixture.unlink()
+            subprocess.run(["git", "-C", str(root), "add", "-u"], check=True, env=env)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "remove"], check=True, env=env)
+            manifest = root / "exceptions.json"
+            payload = {
+                "schema": 1,
+                "current_line_exceptions": [],
+                "history_line_exceptions": [{
+                    "commit": commit, "path": "fixture.txt", "rule": "macos-home",
+                    "line_sha256": audit_public.fingerprint(line),
+                    "reason": "Synthetic immutable test fixture.",
+                }],
+                "metadata_exceptions": [],
+            }
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(
+                audit_public.scan_history(root, [], audit_public.Exceptions(manifest)), 0
+            )
+            payload["history_line_exceptions"][0]["path"] = "other.txt"
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertGreater(
+                audit_public.scan_history(root, [], audit_public.Exceptions(manifest)), 0
+            )
+
+    def test_current_marker_covers_only_head_then_requires_history_migration(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+            line = "cache = " + "/" + "Users/localaccount/cache  # audit:allow"
+            fixture = root / "fixture.txt"
+            fixture.write_text(line + "\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "fixture.txt"], check=True, env=env)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "tip fixture"], check=True, env=env)
+            manifest = root / "exceptions.json"
+            payload = {
+                "schema": 1,
+                "current_line_exceptions": [{
+                    "path": "fixture.txt", "rule": "macos-home",
+                    "line_sha256": audit_public.fingerprint(line),
+                }],
+                "history_line_exceptions": [],
+                "metadata_exceptions": [],
+            }
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(
+                audit_public.scan_history(root, [], audit_public.Exceptions(manifest)), 0
+            )
+            (root / "later.txt").write_text("safe\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "later.txt"], check=True, env=env)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "later"], check=True, env=env)
+            self.assertGreater(
+                audit_public.scan_history(root, [], audit_public.Exceptions(manifest)), 0
+            )
+
+    def test_annotated_tag_metadata_is_scanned(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+            (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "safe.txt"], check=True, env=env)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "safe"], check=True, env=env)
+            message = "contact " + "tag.owner" + "@" + "company.co"
+            subprocess.run(["git", "-C", str(root), "tag", "-a", "v1", "-m", message], check=True, env=env)
+            self.assertGreater(
+                audit_public.scan_history(root, [], audit_public.Exceptions(None)), 0
+            )
 
 
 class TestEndToEnd(unittest.TestCase):

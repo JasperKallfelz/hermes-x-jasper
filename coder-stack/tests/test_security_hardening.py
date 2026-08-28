@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import signal
 import socket
@@ -144,6 +145,40 @@ def write_process_record(path, pid):
 '''
 
 
+def plant_hostile_select(workdir, marker, descendant_record):
+    """Plant a cwd-shadow module that visibly imports and detaches a child."""
+    (Path(workdir) / "select.py").write_text(
+        "import ctypes, json, os, sys, time\n"
+        "from pathlib import Path\n"
+        + PROCESS_RECORD_SOURCE
+        + "\nPath({!r}).write_text('imported', encoding='utf-8')\n".format(
+            str(marker)
+        )
+        + "child = os.fork()\n"
+        + "if child == 0:\n"
+        + "    os.setsid()\n"
+        + "    write_process_record({!r}, os.getpid())\n".format(
+            str(descendant_record)
+        )
+        + "    time.sleep(30)\n"
+        + "    os._exit(0)\n",
+        encoding="utf-8",
+    )
+
+
+def observe_and_reap_hostile_descendant(marker, descendant_record):
+    """Observe a shadow-import survivor, then safely reap its exact identity."""
+    deadline = time.monotonic() + 1.0
+    while marker.exists() and not descendant_record.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    record = read_process_record(descendant_record)
+    survived = record is not None and not wait_for_recorded_exit(record, 0.01)
+    if record is not None:
+        reap_record(record, process_group=True)
+        wait_for_recorded_exit(record, 5)
+    return survived
+
+
 def reap_recorded_model_group(leader_file, descendant_file):
     """Kill only identities recorded by this exact test invocation."""
     recorded = {}
@@ -169,18 +204,18 @@ class VendorAttestationTest(FlowTestCase):
     """HIGH 1 -- the implementation vendor must not be forgeable."""
 
     def test_gate_cannot_forge_the_implementation_vendor_via_the_stage_journal(self):
-        # Claude really implements. A gate appends a forged "codex succeeded"
-        # record to the stage journal before the genuine run_end is written.
+        # Codex really implements. A gate appends a forged provider record
+        # to the stage journal before the genuine run_end is written.
         self.env["GATE_CHECK"] = "forge_vendor"
         self.write_plan({
-            "implement": {"claude": {"touch": ["implemented.txt"]}},
+            "implement": {"codex": {"touch": ["implemented.txt"]}},
             "review": {"*": {"stdout": PASS_REVIEW}},
         })
         result = self.run_flow("--lane", "normal", "add a feature")
         self.assertEqual(result.returncode, 0, result.stderr)
         document = self.state_documents()[0]
         # The forgery must not move attribution away from the real writer.
-        self.assertEqual(document["implementation_vendor"], "claude")
+        self.assertEqual(document["implementation_vendor"], "codex")
         self.assertEqual(document["reviewer_vendor"], "codex")
         self.assertEqual([c["vendor"] for c in self.stages("review")], ["codex"])
 
@@ -208,12 +243,12 @@ class VendorAttestationTest(FlowTestCase):
             "--runner", str(self.fake_runner), "--lane", "normal", "add a feature",
         )
         self.assertEqual(result.returncode, 70, result.stderr)
-        self.assertIn("determine the implementation vendor", result.stderr)
+        self.assertIn("secure runner attestation", result.stderr)
 
     def test_attestation_with_the_wrong_run_identity_is_rejected(self):
         self.write_plan({
             "implement": {
-                "vendor": "claude",
+                "vendor": "codex",
                 "attestation_overrides": {"flow_run_id": "0" * 32},
             },
         })
@@ -295,7 +330,7 @@ class FrozenGateIntegrityTest(FlowTestCase):
 class ProcessGroupCleanupTest(FlowTestCase):
     """HIGH 3 -- timeout cleanup must not leave descendants running."""
 
-    def test_runner_kills_a_descendant_that_ignores_sigterm(self):
+    def test_runner_cleans_descendants_after_timeout_and_successful_gate_exit(self):
         leader_file = self.base / "runner-leader.pid"
         survivor = self.base / "runner-survivor.pid"
         self.addCleanup(reap_recorded_model_group, leader_file, survivor)
@@ -317,7 +352,6 @@ class ProcessGroupCleanupTest(FlowTestCase):
         )
         stub.chmod(0o755)
         env = dict(self.env)
-        env["HERMES_CODER_CLAUDE"] = str(stub)
         env["HERMES_CODER_CODEX"] = str(stub)
         workdir = self.base / "runner-workdir"
         workdir.mkdir()
@@ -339,6 +373,61 @@ class ProcessGroupCleanupTest(FlowTestCase):
         self.assertTrue(
             wait_for_recorded_exit(descendant, 15),
             "descendant {} survived the runner timeout cleanup".format(descendant[0]),
+        )
+
+        gate_leader_file = self.base / "successful-gate-leader.pid"
+        gate_descendant_file = self.base / "successful-gate-descendant.pid"
+        self.addCleanup(
+            reap_recorded_model_group, gate_leader_file, gate_descendant_file
+        )
+        gate_script = self.bin / "successful-gate-with-descendant"
+        gate_script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import ctypes, json, os, signal, sys, time\n"
+            + PROCESS_RECORD_SOURCE
+            + "\nwrite_process_record({!r}, os.getpid())\n"
+            "child = os.fork()\n"
+            "if child == 0:\n"
+            "    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):\n"
+            "        signal.signal(signum, signal.SIG_IGN)\n"
+            "    write_process_record({!r}, os.getpid())\n"
+            "    time.sleep(120)\n"
+            "    os._exit(0)\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not os.path.exists({!r}) and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "raise SystemExit(0)\n".format(
+                str(gate_leader_file),
+                str(gate_descendant_file),
+                str(gate_descendant_file),
+            ),
+            encoding="utf-8",
+        )
+        gate_script.chmod(0o755)
+        runner_module = load_runner_module()
+        gate = runner_module.Gate(
+            "successful-descendant", (str(gate_script),), 10.0
+        )
+        with mock.patch.object(
+            runner_module, "snapshot_worktree", return_value="stable"
+        ), mock.patch.object(
+            runner_module, "verify_gate_integrity", return_value=None
+        ):
+            failure, harness_failure = runner_module.run_gates(
+                (gate,), workdir, time.monotonic() + 20.0, ()
+            )
+        self.assertIsNone(failure)
+        self.assertFalse(harness_failure)
+        gate_leader = read_process_record(gate_leader_file)
+        gate_descendant = read_process_record(gate_descendant_file)
+        self.assertIsNotNone(gate_leader)
+        self.assertIsNotNone(gate_descendant)
+        self.assertTrue(wait_for_recorded_exit(gate_leader, 5))
+        self.assertTrue(
+            wait_for_recorded_exit(gate_descendant, 5),
+            "successful gate descendant {} survived cleanup".format(
+                gate_descendant[0]
+            ),
         )
 
     def test_flow_kills_a_descendant_that_ignores_sigterm(self):
@@ -470,7 +559,6 @@ class ProcessGroupCleanupTest(FlowTestCase):
         )
         stub.chmod(0o755)
         env = dict(self.env)
-        env["HERMES_CODER_CLAUDE"] = str(stub)
         env["HERMES_CODER_CODEX"] = str(stub)
         workdir = self.base / "direct-workdir-{}".format(label)
         workdir.mkdir()
@@ -545,12 +633,11 @@ class ClassificationAttemptTest(FlowTestCase):
     """HIGH 5 -- a failed attempt must never supply the accepted verdict."""
 
     def test_failed_attempt_marker_is_not_accepted_over_a_failsafe(self):
-        # Codex is primary for the read-only inspect task. It emits a valid
-        # "fast" block and then fails; Claude would succeed with garbage.
+        # Codex emits a valid "fast" block and then fails. A failed attempt's
+        # output must not be accepted as the classifier verdict.
         self.write_plan({
             "classify": {
                 "codex": {"stdout": classify_block("fast"), "exit": 4},
-                "claude": {"stdout": "no marker here at all"},
             },
             "implement": {"*": {"touch": ["implemented.txt"]}},
             "review": {"*": {"stdout": PASS_REVIEW}},
@@ -617,7 +704,7 @@ class QuotaClassificationTest(unittest.TestCase):
 
     def test_real_cli_quota_and_auth_signatures_still_classify(self):
         signatures = {
-            "Claude usage limit reached. Your limit resets at 4pm.": "quota_usage_limit",
+            "Codex usage limit reached. Your limit resets at 4pm.": "quota_usage_limit",
             "quota has been exhausted for this subscription": "quota_exhausted",
             "insufficient_quota: please add credits": "quota_insufficient",
             "invalid_grant: refresh token is no longer valid": "auth_invalid_grant",
@@ -908,6 +995,10 @@ class GitControlSurfaceTest(FlowTestCase):
 class GitVisibleSnapshotTest(FlowTestCase):
     """Git-visible hashing is framed, bounded, and race safe."""
 
+    GIT_STATUS_PROFILE = [
+        "status", "--porcelain=v1", "-z", "--untracked-files=all",
+    ]
+
     def test_adjacent_regular_file_record_collision_has_distinct_digests(self):
         module = load_flow_module()
         runner_module = load_runner_module()
@@ -1063,12 +1154,479 @@ class GitVisibleSnapshotTest(FlowTestCase):
         with mock.patch.dict(os.environ, {"PATH": path}):
             with self.assertRaises(module.FlowError) as raised:
                 module.git_bytes(
-                    ["status"], self.source, 1024, time.monotonic() + 20
+                    self.GIT_STATUS_PROFILE, self.source, 1024, time.monotonic() + 20
                 )
         self.assertEqual(raised.exception.reason_id, "git_output_too_large")
         self.assertLess(time.monotonic() - started, 5.0)
         self.assertTrue(pid_file.exists())
         record = read_process_record(pid_file)
+        self.assertIsNotNone(record)
+        self.addCleanup(reap_record, record, True)
+        self.assertTrue(wait_for_recorded_exit(record, 5))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX Git launch handshake")
+    def test_git_bytes_binds_identity_before_immediate_git_exec(self):
+        module = load_flow_module()
+        fake_bin = self.base / "handshake-git-bin"
+        fake_bin.mkdir()
+        marker = self.base / "git-executed"
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!{}\n".format(sys.executable)
+            + "import os, pathlib, sys\n"
+            + "if 'config' in sys.argv:\n"
+            + "    raise SystemExit(1)\n"
+            + "pathlib.Path({!r}).write_text('ran')\n".format(str(marker))
+            + "os.write(1, b'bytes\\x00preserved')\n"
+            + "raise SystemExit(0)\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        path = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+        real_identity = module.process_identity
+        child_calls = []
+
+        def delayed_identity(pid):
+            if pid != os.getpid():
+                child_calls.append(pid)
+                time.sleep(0.25)
+                self.assertFalse(marker.exists(), "Git exec preceded identity binding")
+            return real_identity(pid)
+
+        with mock.patch.dict(os.environ, {"PATH": path}), mock.patch.object(
+            module, "process_identity", side_effect=delayed_identity
+        ):
+            output = module.git_bytes(
+                self.GIT_STATUS_PROFILE, self.source, 1024, time.monotonic() + 5
+            )
+        self.assertEqual(output, b"bytes\x00preserved")
+        # One supervised child discovers local filter drivers and a second
+        # runs the requested status command; both bind identity before exec.
+        self.assertEqual(len(child_calls), 2)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        fake_git.write_text(
+            "#!{}\n".format(sys.executable)
+            + "import os, pathlib, sys\n"
+            + "if 'config' in sys.argv:\n"
+            + "    raise SystemExit(1)\n"
+            + "pathlib.Path({!r}).write_text('ran')\n".format(str(marker))
+            + "raise SystemExit(23)\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            output = module.git_bytes(
+                self.GIT_STATUS_PROFILE, self.source, 1024, time.monotonic() + 5
+            )
+        self.assertIsNone(output)
+        self.assertTrue(marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX Git launch handshake")
+    def test_git_bytes_identity_and_ack_failures_never_exec_git(self):
+        module = load_flow_module()
+        fake_bin = self.base / "failed-handshake-bin"
+        fake_bin.mkdir()
+        marker = self.base / "must-not-execute"
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\nprintf ran > \"$GIT_EXEC_MARKER\"\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        environment = {
+            "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+            "GIT_EXEC_MARKER": str(marker),
+        }
+        real_identity = module.process_identity
+        with mock.patch.dict(os.environ, environment), mock.patch.object(
+            module, "process_identity",
+            side_effect=lambda pid: real_identity(pid) if pid == os.getpid() else None,
+        ):
+            with self.assertRaises(module.FlowError) as raised:
+                module.git_bytes(
+                    self.GIT_STATUS_PROFILE, self.source, 1024, time.monotonic() + 5
+                )
+        self.assertEqual(raised.exception.reason_id, "process_identity_unavailable")
+        self.assertFalse(marker.exists())
+
+        def identity_after_deadline(pid):
+            if pid != os.getpid():
+                time.sleep(0.15)
+            return real_identity(pid)
+
+        with mock.patch.dict(os.environ, environment), mock.patch.object(
+            module, "process_identity", side_effect=identity_after_deadline
+        ):
+            with self.assertRaises(module.FlowError) as raised:
+                module.git_bytes(
+                    self.GIT_STATUS_PROFILE, self.source, 1024,
+                    time.monotonic() + 0.05,
+                )
+        self.assertEqual(raised.exception.reason_id, "wall_timeout")
+        self.assertFalse(marker.exists())
+
+        real_write = module.os.write
+        def failed_ack(fd, data):
+            if data == module.GIT_LAUNCH_ACK:
+                raise OSError(errno.EPIPE, "test ack failure")
+            return real_write(fd, data)
+
+        with mock.patch.dict(os.environ, environment), mock.patch.object(
+            module.os, "write", side_effect=failed_ack
+        ):
+            with self.assertRaises(module.FlowError) as raised:
+                module.git_bytes(
+                    self.GIT_STATUS_PROFILE, self.source, 1024, time.monotonic() + 5
+                )
+        self.assertEqual(raised.exception.reason_id, "git_launch_failed")
+        self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX Git launch handshake")
+    def test_inline_git_launcher_rejects_missing_and_malformed_protocol(self):
+        module = load_flow_module()
+        cases = (
+            ("", "", "", []),
+            ("-1", "-1", module._posix_launch_clock() + 5, self.GIT_STATUS_PROFILE),
+            ("3", "4", "not-a-deadline", self.GIT_STATUS_PROFILE),
+            ("3", "4", module._posix_launch_clock() - 1, self.GIT_STATUS_PROFILE),
+            ("3", "4", module._posix_launch_clock() + 121, self.GIT_STATUS_PROFILE),
+            ("3", "4", module._posix_launch_clock() + 5, ["sh", "-c", "exit 0"]),
+        )
+        for control, status, deadline, arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    module._bounded_git_command(control, status, deadline, arguments),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, module.EXIT_HARNESS)
+
+        fake_bin = self.base / "launcher-eof-bin"
+        fake_bin.mkdir()
+        marker = self.base / "launcher-eof-executed"
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\nprintf ran > \"$GIT_EXEC_MARKER\"\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+        environment["GIT_EXEC_MARKER"] = str(marker)
+        for acknowledgement in (b"", b"malformed"):
+            control_read, control_write = os.pipe()
+            status_read, status_write = os.pipe()
+            try:
+                proc = subprocess.Popen(
+                    module._bounded_git_command(
+                        control_read, status_write,
+                        module._posix_launch_clock() + 5,
+                        self.GIT_STATUS_PROFILE,
+                    ),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    pass_fds=(control_read, status_write),
+                )
+                os.close(control_read)
+                control_read = -1
+                os.close(status_write)
+                status_write = -1
+                self.assertEqual(os.read(status_read, 1), module.GIT_LAUNCH_READY)
+                if acknowledgement:
+                    os.write(control_write, acknowledgement)
+                os.close(control_write)
+                control_write = -1
+                self.assertEqual(proc.wait(timeout=5), module.EXIT_HARNESS)
+                self.assertFalse(marker.exists())
+            finally:
+                for fd in (control_read, control_write, status_read, status_write):
+                    if fd >= 0:
+                        os.close(fd)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX Git launch handshake")
+    def test_inline_git_launcher_rejects_git_alias_command_surface(self):
+        module = load_flow_module()
+        marker = self.base / "alias-command-executed"
+        control_read, control_write = os.pipe()
+        status_read, status_write = os.pipe()
+        try:
+            arguments = module._bounded_git_command(
+                control_read, status_write, module._posix_launch_clock() + 5, [
+                "-c",
+                "alias.handshakeprobe=!printf HANDSHAKE_ARBITRARY_COMMAND_SURFACE; "
+                "printf ran > \"$GIT_EXEC_MARKER\"",
+                "handshakeprobe",
+            ])
+            environment = os.environ.copy()
+            environment["GIT_EXEC_MARKER"] = str(marker)
+            proc = subprocess.Popen(
+                arguments,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                pass_fds=(control_read, status_write),
+            )
+            os.close(control_read)
+            control_read = -1
+            os.close(status_write)
+            status_write = -1
+            stdout, stderr = proc.communicate(timeout=5)
+            self.assertEqual(proc.returncode, module.EXIT_HARNESS)
+            self.assertEqual(stdout, b"")
+            self.assertEqual(stderr, b"")
+            self.assertEqual(os.read(status_read, 1), b"")
+            self.assertFalse(marker.exists())
+        finally:
+            for fd in (control_read, control_write, status_read, status_write):
+                if fd >= 0:
+                    os.close(fd)
+            if "proc" in locals():
+                reap_process(proc)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX Git launch handshake")
+    def test_inline_git_launcher_ack_wait_obeys_deadline(self):
+        module = load_flow_module()
+        fake_bin = self.base / "withheld-ack-bin"
+        fake_bin.mkdir()
+        marker = self.base / "withheld-ack-executed"
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\nprintf ran > \"$GIT_EXEC_MARKER\"\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        control_read, control_write = os.pipe()
+        status_read, status_write = os.pipe()
+        launch_deadline = module._posix_launch_clock() + 0.5
+        try:
+            environment = os.environ.copy()
+            environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+            environment["GIT_EXEC_MARKER"] = str(marker)
+            proc = subprocess.Popen(
+                module._bounded_git_command(
+                    control_read, status_write, launch_deadline,
+                    self.GIT_STATUS_PROFILE,
+                ),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                pass_fds=(control_read, status_write),
+            )
+            os.close(control_read)
+            control_read = -1
+            os.close(status_write)
+            status_write = -1
+            readable, _, _ = select.select([status_read], [], [], 2)
+            self.assertTrue(readable)
+            self.assertEqual(os.read(status_read, 1), module.GIT_LAUNCH_READY)
+            self.assertEqual(proc.wait(timeout=2), module.EXIT_HARNESS)
+            self.assertLess(module._posix_launch_clock(), launch_deadline + 0.5)
+            self.assertFalse(marker.exists())
+        finally:
+            for fd in (control_read, control_write, status_read, status_write):
+                if fd >= 0:
+                    os.close(fd)
+            if "proc" in locals():
+                reap_process(proc)
+
+
+@unittest.skipUnless(os.name == "posix", "identity-bound Git supervision is POSIX")
+class CoderGitSnapshotHardeningTest(unittest.TestCase):
+    """Every hermes-coder snapshot Git call uses the hardened owner launcher."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.repo = self.base / "repo"
+        self.repo.mkdir()
+        self.real_git = shutil.which("git")
+        self.assertIsNotNone(self.real_git)
+        self.git_env = os.environ.copy()
+        for name in list(self.git_env):
+            if name.startswith("GIT_CONFIG_") or name in (
+                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_COMMON_DIR", "GIT_NAMESPACE",
+            ):
+                self.git_env.pop(name, None)
+        self.git_env.update({
+            "GIT_AUTHOR_NAME": "Snapshot Test",
+            "GIT_AUTHOR_EMAIL": "snapshot@example.invalid",
+            "GIT_COMMITTER_NAME": "Snapshot Test",
+            "GIT_COMMITTER_EMAIL": "snapshot@example.invalid",
+        })
+        self.git("init", "--quiet")
+        self.git("config", "user.name", "Snapshot Test")
+        self.git("config", "user.email", "snapshot@example.invalid")
+        (self.repo / ".gitattributes").write_text(
+            "*.txt filter=hostile\n", encoding="utf-8"
+        )
+        (self.repo / "data.txt").write_text("one\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "--quiet", "-m", "initial")
+
+    def git(self, *arguments):
+        completed = subprocess.run(
+            [str(self.real_git)] + list(arguments),
+            cwd=str(self.repo),
+            env=self.git_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed
+
+    def executable(self, name, body):
+        path = self.base / name
+        path.write_text("#!{}\n{}".format(sys.executable, body), encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def test_snapshot_neutralizes_local_controls_and_hostile_git_environment(self):
+        module = load_runner_module()
+        module._TRUSTED_GIT = str(Path(str(self.real_git)).resolve())
+        sentinels = dict(
+            (name, self.base / (name + "-ran"))
+            for name in ("fsmonitor", "filter", "hook", "environment", "path")
+        )
+        fsmonitor = self.executable(
+            "fsmonitor.py",
+            "from pathlib import Path\n"
+            "Path({!r}).write_text('ran')\n".format(str(sentinels["fsmonitor"]))
+            + "print()\n",
+        )
+        clean_filter = self.executable(
+            "filter.py",
+            "from pathlib import Path\nimport sys\n"
+            "Path({!r}).write_text('ran')\n".format(str(sentinels["filter"]))
+            + "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+        )
+        hooks = self.base / "hooks"
+        hooks.mkdir()
+        hook = hooks / "post-index-change"
+        hook.write_text(
+            "#!{}\nfrom pathlib import Path\nPath({!r}).write_text('ran')\n".format(
+                sys.executable, str(sentinels["hook"])
+            ),
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        environment_probe = self.executable(
+            "environment.py",
+            "from pathlib import Path\n"
+            "Path({!r}).write_text('ran')\n".format(str(sentinels["environment"])),
+        )
+        hostile_bin = self.base / "hostile-bin"
+        hostile_bin.mkdir()
+        hostile_git = hostile_bin / "git"
+        hostile_git.write_text(
+            "#!{}\nfrom pathlib import Path\nPath({!r}).write_text('ran')\n".format(
+                sys.executable, str(sentinels["path"])
+            ),
+            encoding="utf-8",
+        )
+        hostile_git.chmod(0o755)
+
+        self.git("config", "core.fsmonitor", str(fsmonitor))
+        self.git("config", "core.hooksPath", str(hooks))
+        self.git("config", "filter.hostile.clean", str(clean_filter))
+        self.git("config", "filter.hostile.smudge", str(clean_filter))
+        self.git("config", "filter.hostile.required", "true")
+        (self.repo / "data.txt").write_text("two\n", encoding="utf-8")
+
+        hostile_environment = {
+            "PATH": str(hostile_bin) + os.pathsep + os.environ.get("PATH", ""),
+            "GIT_DIR": str(self.base / "wrong-git-dir"),
+            "GIT_WORK_TREE": str(self.base / "wrong-worktree"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": str(environment_probe),
+            "GIT_EXTERNAL_DIFF": str(environment_probe),
+            "GIT_PAGER": str(environment_probe),
+            "GIT_EDITOR": str(environment_probe),
+            "GIT_ASKPASS": str(environment_probe),
+            "SSH_ASKPASS": str(environment_probe),
+        }
+        with mock.patch.dict(os.environ, hostile_environment):
+            digest = module.snapshot_worktree(
+                self.repo, time.monotonic() + 20
+            )
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertTrue(all(not path.exists() for path in sentinels.values()))
+
+    def test_snapshot_reaps_a_descendant_after_the_git_leader_exits(self):
+        module = load_runner_module()
+        record_path = self.base / "git-descendant.json"
+        fake_git = self.base / "descendant-git"
+        fake_git.write_text(
+            "#!{}\n".format(sys.executable)
+            + "import ctypes, json, os, signal, sys, time\n"
+            + PROCESS_RECORD_SOURCE
+            + "\nargs=sys.argv[1:]\n"
+            + "if 'config' in args:\n    raise SystemExit(1)\n"
+            + "if 'rev-parse' in args:\n    print('true'); raise SystemExit(0)\n"
+            + "if 'status' in args:\n"
+            + "    ready_r,ready_w=os.pipe()\n"
+            + "    child=os.fork()\n"
+            + "    if child==0:\n"
+            + "        os.close(ready_r)\n"
+            + "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            + "        write_process_record({!r}, os.getpid())\n".format(str(record_path))
+            + "        os.write(ready_w,b'1'); os.close(ready_w)\n"
+            + "        while True: time.sleep(1)\n"
+            + "    os.close(ready_w); os.read(ready_r,1); os.close(ready_r)\n"
+            + "raise SystemExit(0)\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        module._TRUSTED_GIT = str(fake_git)
+        digest = module.snapshot_worktree(self.repo, time.monotonic() + 10)
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        record = read_process_record(record_path)
+        self.assertIsNotNone(record)
+        self.addCleanup(reap_record, record, True)
+        self.assertTrue(wait_for_recorded_exit(record, 5))
+
+    def test_snapshot_output_cap_stops_and_reaps_the_git_process(self):
+        module = load_runner_module()
+        record_path = self.base / "oversized-git.json"
+        fake_git = self.base / "oversized-git"
+        fake_git.write_text(
+            "#!{}\n".format(sys.executable)
+            + "import ctypes, json, os, sys\n"
+            + PROCESS_RECORD_SOURCE
+            + "\nwrite_process_record({!r}, os.getpid())\n".format(str(record_path))
+            + "while True: os.write(1,b'x'*65536)\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        module._TRUSTED_GIT = str(fake_git)
+        with mock.patch.object(module, "GIT_SNAPSHOT_OUTPUT_LIMIT", 4096):
+            with self.assertRaises(OSError) as raised:
+                module._git_snapshot_command(
+                    ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                    self.repo,
+                    time.monotonic() + 10,
+                    filter_overrides=(),
+                )
+        self.assertEqual(raised.exception.errno, errno.EFBIG)
+        record = read_process_record(record_path)
         self.assertIsNotNone(record)
         self.addCleanup(reap_record, record, True)
         self.assertTrue(wait_for_recorded_exit(record, 5))
@@ -1166,7 +1724,7 @@ class StageSnapshotTelemetryTest(FlowTestCase):
         module = load_flow_module()
         flow = self.unit_flow(module)
         completed = module.StageOutcome(
-            "implement", 0, 0.0, "claude", "private model output", "success", "success"
+            "implement", 0, 0.0, "codex", "private model output", "success", "success"
         )
         snapshot_failure = module.FlowError(
             module.EXIT_HARNESS, "stage_snapshot_failed", "private post path"
@@ -1189,7 +1747,7 @@ class StageSnapshotTelemetryTest(FlowTestCase):
         self.assertEqual(events, ["stage_start", "stage_end"])
         stage = flow.state.document["stages"][0]
         self.assertEqual(stage["exit_code"], 0)
-        self.assertEqual(stage["vendor"], "claude")
+        self.assertEqual(stage["vendor"], "codex")
         self.assertEqual(stage["status"], "success")
         self.assertEqual(stage["reason_id"], "success")
         self.assertEqual(stage["snapshot_status"], "failed")
@@ -1251,7 +1809,7 @@ class StageSnapshotTelemetryTest(FlowTestCase):
         flow = self.unit_flow(module)
         before = ("a" * 40, "b" * 64)
         completed = module.StageOutcome(
-            "implement", 0, 0.0, "claude", "private output", "success", "success"
+            "implement", 0, 0.0, "codex", "private output", "success", "success"
         )
         real_unlink = Path.unlink
 
@@ -1291,7 +1849,7 @@ class StageSnapshotTelemetryTest(FlowTestCase):
         flow = self.unit_flow(module)
         before = ("a" * 40, "b" * 64)
         completed = module.StageOutcome(
-            "implement", 0, 0.0, "claude", "private output", "success", "success"
+            "implement", 0, 0.0, "codex", "private output", "success", "success"
         )
         frozen_error = module.FlowError(
             module.EXIT_HARNESS, "frozen_gate_integrity", "private gate path"
@@ -1371,30 +1929,42 @@ class AdjacentLowHardeningTest(unittest.TestCase):
         # two-second output-pump joins.
         self.assertGreaterEqual(module.RUNNER_ACK_GRACE_SECONDS, 8.0)
 
-    def test_flow_doctor_budget_covers_both_vendor_cleanups(self):
+    def test_flow_doctor_budget_covers_codex_cleanup(self):
         module = load_flow_module()
         self.assertGreaterEqual(
             module.DOCTOR_GRACE_SECONDS,
-            2.0 * module.DOCTOR_VENDOR_CLEANUP_SECONDS,
+            module.DOCTOR_VENDOR_CLEANUP_SECONDS,
         )
 
     def test_remaining_git_helpers_use_devnull_stdin(self):
         flow_module = load_flow_module()
-        completed = subprocess.CompletedProcess([], 0, b"", b"")
         with mock.patch.object(
-            flow_module.subprocess, "run", return_value=completed
-        ) as run:
-            flow_module.git(["status"], Path.cwd())
-        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            flow_module.subprocess,
+            "Popen",
+            side_effect=OSError(errno.EIO, "synthetic launch failure"),
+        ) as popen:
+            with self.assertRaises(flow_module.FlowError):
+                flow_module.launch_owned_process(
+                    [sys.executable, "-c", "pass"],
+                    Path.cwd(),
+                    {},
+                    time.monotonic() + 5,
+                )
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
         runner_module = load_runner_module()
         with mock.patch.object(
-            runner_module.subprocess, "run", return_value=completed
-        ) as run:
-            runner_module._git_snapshot_command(
-                ["status"], Path.cwd(), time.monotonic() + 30
+            runner_module.subprocess,
+            "Popen",
+            side_effect=OSError(errno.EIO, "synthetic launch failure"),
+        ) as popen:
+            result = runner_module.run_process(
+                [sys.executable, "-c", "pass"],
+                Path.cwd(),
+                5,
             )
-        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertTrue(result.launch_failed)
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
     def test_doctor_reader_oserror_fails_closed_without_thread_traceback(self):
         module = load_flow_module()
@@ -1427,11 +1997,20 @@ class AdjacentLowHardeningTest(unittest.TestCase):
             def poll():
                 return 0
 
+        class FakeOwned:
+            proc = FakeProcess()
+            identity = "test:doctor"
+            target_returncode = 0
+            protocol_failed = False
+            closed = False
+
+            @staticmethod
+            def cleanup(_deadline, graceful):
+                return True
+
         payload = doctor_json().encode("utf-8")
         with mock.patch.object(
-            module.subprocess, "Popen", return_value=FakeProcess()
-        ), mock.patch.object(
-            module, "process_identity", return_value="test:doctor"
+            module, "launch_owned_process", return_value=FakeOwned()
         ), mock.patch.object(
             module.os, "read", side_effect=(payload, OSError(errno.EIO, "private pipe detail"))
         ), mock.patch.object(
@@ -1457,7 +2036,7 @@ class AdjacentLowHardeningTest(unittest.TestCase):
 
         def fake_run_process(
             _cmd, _workdir, _timeout, _shutdown=None, report_model_group=False,
-            environment=None,
+            environment=None, absolute_deadline=None,
         ):
             registrations.append(report_model_group)
             return module.RunResult(0, b"", b"", 0.0)
@@ -1521,7 +2100,6 @@ class FlowLockTest(FlowTestCase):
         )
         stripper.chmod(0o755)
         env = dict(self.env)
-        env["HERMES_CODER_CLAUDE"] = str(stripper)
         env["HERMES_CODER_CODEX"] = str(stripper)
         env["NESTED_SOURCE"] = str(self.source)
         self.write_plan({})
@@ -1568,8 +2146,21 @@ class SignalCleanupTest(FlowTestCase):
         descendant = read_process_record(descendant_file)
         self.assertIsNotNone(leader)
         self.assertIsNotNone(descendant)
-        self.assertEqual(os.getpgid(leader[0]), leader[0], "model leader must own its isolated group")
-        self.assertEqual(os.getpgid(descendant[0]), leader[0], "descendant must share the model group")
+        # The launch supervisor is the session and group leader; the model
+        # target and its descendants share that isolated group.
+        model_group = os.getpgid(leader[0])
+        self.assertEqual(
+            os.getsid(leader[0]), model_group,
+            "model group must be an isolated session owned by the supervisor",
+        )
+        self.assertNotEqual(
+            model_group, os.getpgid(0),
+            "model group must not share the flow test process group",
+        )
+        self.assertEqual(
+            os.getpgid(descendant[0]), model_group,
+            "descendant must share the model group",
+        )
         proc.send_signal(signum)
         if repeat:
             time.sleep(0.1)
@@ -1720,27 +2311,24 @@ class DirectRunnerIdentityPreflightTest(unittest.TestCase):
         self.assertEqual(result.exit_code, self.module.EXIT_HARNESS)
         self.assertEqual(result.reason_id, "process_identity_unavailable")
 
-    def test_identity_capture_failure_uses_only_the_direct_popen_child(self):
-        pid_file = self.workdir / "child.pid"
+    def test_identity_capture_failure_never_authorizes_target_execution(self):
+        marker = self.workdir / "target-executed"
         script = self.workdir / "child.py"
         script.write_text(
-            "import os, time\n"
-            "open({!r}, 'w').write(str(os.getpid()))\n"
-            "time.sleep(30)\n".format(str(pid_file)),
+            "import pathlib, time\n"
+            "pathlib.Path({!r}).write_text('ran')\n"
+            "time.sleep(30)\n".format(str(marker)),
             encoding="utf-8",
         )
         real_pid = os.getpid()
-        real_popen = self.module.subprocess.Popen
+        executed_before_binding = []
 
         def fake_identity(pid):
-            return "self-identity-token" if pid == real_pid else None
-
-        def started_popen(*args, **kwargs):
-            proc = real_popen(*args, **kwargs)
-            deadline = time.monotonic() + 5.0
-            while not pid_file.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            return proc
+            if pid == real_pid:
+                return "self-identity-token"
+            time.sleep(0.25)
+            executed_before_binding.append(marker.exists())
+            return None
 
         class RecordingShutdown:
             def __init__(self):
@@ -1759,7 +2347,6 @@ class DirectRunnerIdentityPreflightTest(unittest.TestCase):
 
         shutdown = RecordingShutdown()
         with mock.patch.object(self.module, "process_identity", side_effect=fake_identity), \
-                mock.patch.object(self.module.subprocess, "Popen", side_effect=started_popen), \
                 mock.patch.object(self.module.os, "killpg") as kill_group:
             result = self.module.run_process(
                 [sys.executable, str(script)], self.workdir, 5.0,
@@ -1770,11 +2357,11 @@ class DirectRunnerIdentityPreflightTest(unittest.TestCase):
         self.assertTrue(shutdown.failed)
         self.assertTrue(result.launch_failed)
         self.assertEqual(result.reason_id, "process_identity_unavailable")
-        child_pid = int(pid_file.read_text(encoding="utf-8"))
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and current_process_identity(child_pid) is not None:
-            time.sleep(0.05)
-        self.assertIsNone(current_process_identity(child_pid))
+        identity_reader_deadline = time.monotonic() + 1.0
+        while not executed_before_binding and time.monotonic() < identity_reader_deadline:
+            time.sleep(0.01)
+        self.assertEqual(executed_before_binding, [False])
+        self.assertFalse(marker.exists())
 
     def test_windows_fallback_keeps_live_popen_identity(self):
         class RecordingShutdown:
@@ -1865,6 +2452,439 @@ class DirectRunnerIdentityPreflightTest(unittest.TestCase):
         self.assertIsNotNone(children[0].returncode)
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX launch supervisor")
+class RunnerSupervisorLaunchFailureTest(unittest.TestCase):
+    """The POSIX launch supervisor surfaces bounded, fail-closed launch errors."""
+
+    def setUp(self):
+        self.module = load_runner_module()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.workdir = Path(self.temp.name)
+
+    def test_missing_executable_maps_to_executable_missing(self):
+        result = self.module.run_process(
+            [str(self.workdir / "does-not-exist")], self.workdir, 5.0,
+            shutdown=None, report_model_group=False,
+        )
+        self.assertTrue(result.launch_failed)
+        self.assertEqual(result.launch_errno, errno.ENOENT)
+        self.assertEqual(result.exit_code, 127)
+        self.assertEqual(result.reason_id, "executable_missing")
+
+    def test_non_executable_target_maps_to_launch_os_error(self):
+        target = self.workdir / "not-executable"
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        target.chmod(0o644)
+        result = self.module.run_process(
+            [str(target)], self.workdir, 5.0,
+            shutdown=None, report_model_group=False,
+        )
+        self.assertTrue(result.launch_failed)
+        self.assertEqual(result.launch_errno, errno.EACCES)
+        self.assertEqual(result.exit_code, 126)
+        self.assertEqual(result.reason_id, "launch_os_error")
+
+    def test_invalid_readiness_token_fails_handshake_without_execution(self):
+        marker = self.workdir / "handshake-executed"
+        script = self.workdir / "target.py"
+        script.write_text(
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('ran')\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(self.module, "PROCESS_LAUNCH_READY", b"Z"):
+            result = self.module.run_process(
+                [sys.executable, str(script), str(marker)], self.workdir, 5.0,
+                shutdown=None, report_model_group=False,
+            )
+        self.assertTrue(result.launch_failed)
+        self.assertEqual(result.exit_code, self.module.EXIT_HARNESS)
+        self.assertEqual(result.reason_id, "process_supervisor_handshake_failed")
+        self.assertFalse(marker.exists())
+
+    def test_rejected_acknowledgement_maps_to_protocol_failure(self):
+        marker = self.workdir / "protocol-executed"
+        script = self.workdir / "target.py"
+        script.write_text(
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('ran')\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(self.module, "PROCESS_LAUNCH_ACK", b"X"):
+            result = self.module.run_process(
+                [sys.executable, str(script), str(marker)], self.workdir, 5.0,
+                shutdown=None, report_model_group=False,
+            )
+        self.assertTrue(result.launch_failed)
+        self.assertEqual(result.exit_code, self.module.EXIT_HARNESS)
+        self.assertEqual(result.reason_id, "process_supervisor_protocol_failed")
+        self.assertFalse(marker.exists())
+
+
+@unittest.skipUnless(os.name == "posix", "isolated inline supervisors require POSIX")
+class SupervisorIsolationTest(unittest.TestCase):
+    """Trusted inline Python never imports attacker-controlled cwd modules."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+
+    def hostile_workdir(self, name):
+        workdir = self.base / name
+        workdir.mkdir()
+        marker = self.base / (name + "-select-imported")
+        descendant = self.base / (name + "-descendant.json")
+        plant_hostile_select(workdir, marker, descendant)
+        return workdir, marker, descendant
+
+    def assert_shadow_was_inert(self, marker, descendant):
+        survived = observe_and_reap_hostile_descendant(marker, descendant)
+        self.assertFalse(marker.exists(), "cwd select.py executed before authorization")
+        self.assertFalse(survived, "detached cwd-shadow descendant survived cleanup")
+        self.assertFalse(descendant.exists(), "cwd select.py forked a detached descendant")
+
+    def test_coder_supervisor_ignores_hostile_cwd_select_module(self):
+        module = load_runner_module()
+        workdir, marker, descendant = self.hostile_workdir("coder")
+        try:
+            result = module.run_process(
+                [sys.executable, "-I", "-c", "pass"],
+                workdir,
+                5.0,
+                shutdown=None,
+                report_model_group=False,
+            )
+        finally:
+            self.assert_shadow_was_inert(marker, descendant)
+        self.assertEqual(result.exit_code, 0)
+        self.assertFalse(result.cleanup_failed)
+
+    def test_flow_owner_ignores_hostile_cwd_select_module(self):
+        module = load_flow_module()
+        workdir, marker, descendant = self.hostile_workdir("flow-owner")
+        try:
+            code, _stdout, _stderr = module._git_capture(
+                ["--version"],
+                workdir,
+                timeout=5.0,
+                output_limit=64 * 1024,
+                discover_filters=False,
+            )
+        finally:
+            self.assert_shadow_was_inert(marker, descendant)
+        self.assertEqual(code, 0)
+
+    def test_flow_inline_git_supervisor_ignores_hostile_cwd_select_module(self):
+        module = load_flow_module()
+        workdir, marker, descendant = self.hostile_workdir("flow-inline-git")
+        try:
+            completed = subprocess.run(
+                module._bounded_git_command("", "", "", []),
+                cwd=str(workdir),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                timeout=5,
+                check=False,
+            )
+        finally:
+            self.assert_shadow_was_inert(marker, descendant)
+        self.assertEqual(completed.returncode, module.EXIT_HARNESS)
+
+
+class FlowInputContainmentTest(unittest.TestCase):
+    """Prompt and explicit gate inputs are regular, bounded, and deadline-aware."""
+
+    def setUp(self):
+        self.module = load_flow_module()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+
+    def assert_timeout(self, raised):
+        self.assertEqual(raised.exception.exit_code, self.module.EXIT_TIMEOUT)
+        self.assertEqual(raised.exception.reason_id, "wall_timeout")
+
+    @unittest.skipUnless(os.name == "posix", "FIFO containment requires POSIX")
+    def test_prompt_file_fifo_is_nonblocking_and_rejected(self):
+        prompt_file = self.base / "prompt.fifo"
+        os.mkfifo(str(prompt_file))
+        args = types.SimpleNamespace(prompt_file=prompt_file, prompt=None)
+        started = time.monotonic()
+        with mock.patch.object(
+            self.module.os,
+            "open",
+            side_effect=AssertionError("known FIFO must be rejected before os.open"),
+        ) as opened:
+            with self.assertRaises(self.module.FlowError) as raised:
+                self.module.load_prompt(args, time.monotonic() + 2.0)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(raised.exception.exit_code, self.module.EXIT_USAGE)
+        self.assertEqual(raised.exception.reason_id, "prompt_unreadable")
+        opened.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "FIFO containment requires POSIX")
+    def test_regular_file_to_fifo_open_race_is_nonblocking_and_rejected(self):
+        prompt_file = self.base / "prompt.txt"
+        prompt_file.write_text("task", encoding="utf-8")
+        real_launch = self.module.launch_owned_process
+        launches = []
+
+        def swap_then_launch(*args, **kwargs):
+            launches.append(args[0])
+            prompt_file.unlink()
+            os.mkfifo(str(prompt_file))
+            return real_launch(*args, **kwargs)
+
+        started = time.monotonic()
+        with mock.patch.object(
+            self.module,
+            "launch_owned_process",
+            side_effect=swap_then_launch,
+        ):
+            with self.assertRaises(self.module.FlowError) as raised:
+                self.module._read_limited(
+                    prompt_file,
+                    self.module.MAX_PROMPT_BYTES,
+                    "prompt",
+                    time.monotonic() + 2.0,
+                )
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(raised.exception.reason_id, "prompt_unreadable")
+        self.assertEqual(len(launches), 1)
+        self.assertEqual(
+            launches[0][:5],
+            [sys.executable, "-I", "-S", "-B", "-c"],
+        )
+
+    def test_prompt_file_expired_deadline_is_timeout(self):
+        prompt_file = self.base / "prompt.txt"
+        prompt_file.write_text("task", encoding="utf-8")
+        args = types.SimpleNamespace(prompt_file=prompt_file, prompt=None)
+        with self.assertRaises(self.module.FlowError) as raised:
+            self.module.load_prompt(args, time.monotonic() - 1.0)
+        self.assert_timeout(raised)
+
+    @unittest.skipUnless(os.name == "posix", "FIFO containment requires POSIX")
+    def test_gate_file_fifo_is_nonblocking_and_rejected(self):
+        gate_file = self.base / "gates.fifo"
+        os.mkfifo(str(gate_file))
+        started = time.monotonic()
+        with mock.patch.object(
+            self.module.os,
+            "open",
+            side_effect=AssertionError("known FIFO must be rejected before os.open"),
+        ) as opened:
+            with self.assertRaises(self.module.FlowError) as raised:
+                self.module.resolve_gates(
+                    self.base,
+                    "0" * 40,
+                    gate_file,
+                    False,
+                    None,
+                    time.monotonic() + 2.0,
+                )
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(raised.exception.exit_code, self.module.EXIT_USAGE)
+        self.assertEqual(raised.exception.reason_id, "gate_file_unreadable")
+        opened.assert_not_called()
+
+    def test_gate_file_expired_deadline_is_timeout(self):
+        gate_file = self.base / "gates.json"
+        gate_file.write_text('{"version":1,"gates":[]}', encoding="utf-8")
+        with self.assertRaises(self.module.FlowError) as raised:
+            self.module.resolve_gates(
+                self.base,
+                "0" * 40,
+                gate_file,
+                False,
+                None,
+                time.monotonic() - 1.0,
+            )
+        self.assert_timeout(raised)
+
+    def blocking_helper_command(self, record):
+        source = (
+            "import os,time\n"
+            "fd=os.open({!r},os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_CLOEXEC,0o600)\n"
+            "os.write(fd,str(os.getpid()).encode('ascii'))\n"
+            "os.close(fd)\n"
+            "time.sleep(60)\n"
+        ).format(str(record))
+
+        def command(_path, _limit, _expected):
+            return [sys.executable, "-I", "-S", "-B", "-c", source]
+
+        return command
+
+    def captured_launch(self, launched):
+        real_launch = self.module.launch_owned_process
+
+        def launch(*args, **kwargs):
+            owned = real_launch(*args, **kwargs)
+            launched.append(owned)
+            return owned
+
+        return launch
+
+    @unittest.skipUnless(os.name == "posix", "owned read helper requires POSIX")
+    def test_blocked_read_helper_is_killed_and_reaped_before_deadline(self):
+        prompt_file = self.base / "blocked-prompt.txt"
+        prompt_file.write_bytes(b"task")
+        record = self.base / "blocked-helper.pid"
+        launched = []
+        started = time.monotonic()
+        deadline = started + 1.5
+        with mock.patch.object(
+            self.module,
+            "_limited_read_helper_command",
+            side_effect=self.blocking_helper_command(record),
+        ), mock.patch.object(
+            self.module,
+            "launch_owned_process",
+            side_effect=self.captured_launch(launched),
+        ):
+            with self.assertRaises(self.module.FlowError) as raised:
+                self.module._read_limited(
+                    prompt_file,
+                    self.module.MAX_PROMPT_BYTES,
+                    "prompt",
+                    deadline,
+                )
+        self.assert_timeout(raised)
+        self.assertLess(time.monotonic(), deadline)
+        self.assertEqual(len(launched), 1)
+        self.assertIsNotNone(launched[0].proc.poll())
+        helper_pid = int(record.read_text(encoding="ascii"))
+        self.assertIsNone(self.module.process_identity(helper_pid))
+
+    @unittest.skipUnless(os.name == "posix", "owned read helper requires POSIX")
+    def test_termination_callback_aborts_blocked_read_boundedly(self):
+        prompt_file = self.base / "terminated-prompt.txt"
+        prompt_file.write_bytes(b"task")
+        record = self.base / "terminated-helper.pid"
+        launched = []
+
+        def terminate_after_start():
+            if record.exists():
+                raise self.module.FlowTermination(signal.SIGTERM)
+
+        started = time.monotonic()
+        with mock.patch.object(
+            self.module,
+            "_limited_read_helper_command",
+            side_effect=self.blocking_helper_command(record),
+        ), mock.patch.object(
+            self.module,
+            "launch_owned_process",
+            side_effect=self.captured_launch(launched),
+        ):
+            with self.assertRaises(self.module.FlowTermination) as raised:
+                self.module._read_limited(
+                    prompt_file,
+                    self.module.MAX_PROMPT_BYTES,
+                    "prompt",
+                    time.monotonic() + 2.0,
+                    terminate_after_start,
+                )
+        self.assertEqual(raised.exception.signum, signal.SIGTERM)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(len(launched), 1)
+        self.assertIsNotNone(launched[0].proc.poll())
+        helper_pid = int(record.read_text(encoding="ascii"))
+        self.assertIsNone(self.module.process_identity(helper_pid))
+
+    @unittest.skipUnless(os.name == "posix", "owned read helper requires POSIX")
+    def test_normal_prompt_and_gate_bytes_are_unchanged(self):
+        prompt_raw = "first line\r\nGrüße ☃\n".encode("utf-8")
+        prompt_file = self.base / "prompt.txt"
+        prompt_file.write_bytes(prompt_raw)
+        deadline = time.monotonic() + 5.0
+        self.assertEqual(
+            self.module._read_limited(
+                prompt_file,
+                self.module.MAX_PROMPT_BYTES,
+                "prompt",
+                deadline,
+            ),
+            prompt_raw,
+        )
+        args = types.SimpleNamespace(prompt_file=prompt_file, prompt=None)
+        self.assertEqual(
+            self.module.load_prompt(args, deadline).encode("utf-8"),
+            prompt_raw,
+        )
+
+        gate_raw = (
+            b'{\r\n  "version": 1,\r\n  "gates": ['
+            b'{"name":"check","argv":["true"]}'
+            b']\r\n}\r\n'
+        )
+        gate_file = self.base / "gates.json"
+        gate_file.write_bytes(gate_raw)
+        frozen_file = self.base / "frozen-gates.json"
+        gate_plan = self.module.resolve_gates(
+            self.base,
+            "0" * 40,
+            gate_file,
+            False,
+            frozen_file,
+            deadline,
+        )
+        self.assertEqual(frozen_file.read_bytes(), gate_raw)
+        self.assertEqual(gate_plan.policy_digest, hashlib.sha256(gate_raw).hexdigest())
+        self.module.verify_frozen_gate_policy(gate_plan, deadline)
+
+    @unittest.skipUnless(os.name == "posix", "owned read helper requires POSIX")
+    def test_expired_frozen_gate_verification_skips_stage_execution(self):
+        gate_raw = b'{"version":1,"gates":[]}'
+        frozen_file = self.base / "expired-frozen-gates.json"
+        frozen_file.write_bytes(gate_raw)
+        frozen_file.chmod(0o400)
+        args = types.SimpleNamespace(
+            wall_timeout=60.0,
+            stage_timeout=30.0,
+            max_model_stages=6,
+            journal_max_bytes=1024 * 1024,
+            journal_backups=0,
+        )
+        flow = self.module.Flow(args)
+        flow.runner = Path(sys.executable)
+        flow.state_dir = self.base / "expired-stage-state"
+        flow.worktree = self.base
+        flow.state = self.module.FlowState(None)
+        flow.gate_plan = self.module.GatePlan(
+            "required",
+            "cli",
+            0,
+            frozen_file,
+            hashlib.sha256(gate_raw).hexdigest(),
+        )
+
+        def expire_after_snapshot(*_args, **_kwargs):
+            flow.deadline = time.monotonic() - 0.01
+            return "a" * 40, "b" * 64
+
+        with mock.patch.object(
+            self.module,
+            "git_visible_snapshot",
+            side_effect=expire_after_snapshot,
+        ), mock.patch.object(flow, "_execute") as execute:
+            with self.assertRaises(self.module.FlowError) as raised:
+                flow.run_stage(
+                    "final-gates",
+                    ["--gates-only"],
+                    None,
+                    False,
+                    None,
+                )
+        self.assert_timeout(raised)
+        execute.assert_not_called()
+
+
 class HandoffDrainTest(unittest.TestCase):
     """Lifecycle writes are continuously drained and bounded."""
 
@@ -1944,6 +2964,31 @@ class TimeoutExitCodeTest(unittest.TestCase):
         self.assertEqual(self.module.terminal_exit_for("timeout"), 124)
 
 
+class CommittedRangeCiTest(unittest.TestCase):
+    """CI checks committed whitespace over the event-derived history range."""
+
+    def test_ci_fetches_history_and_uses_pr_push_and_initial_push_ranges(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn("github.event.pull_request.base.sha", workflow)
+        self.assertIn("github.event.before", workflow)
+        self.assertIn("git merge-base", workflow)
+        self.assertIn('git diff --check "${range_start}...${head_sha}"', workflow)
+        self.assertIn('git diff --check "${before_sha}...${head_sha}"', workflow)
+        self.assertIn("git hash-object -t tree /dev/null", workflow)
+
+    def test_docs_distinguish_local_worktree_and_committed_range_checks(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        reliability = (ROOT / "docs" / "reliability-and-gates.md").read_text(
+            encoding="utf-8"
+        )
+        for document in (readme, reliability):
+            self.assertIn("working-tree", document)
+            self.assertIn("committed", document)
+
+
 class PreflightTimeoutTest(FlowTestCase):
     """MEDIUM 8 -- preflight Git work is bounded by the flow deadline."""
 
@@ -2004,14 +3049,18 @@ HARDENING_CASES = (
     SecretMarkerTest,
     GitControlSurfaceTest,
     GitVisibleSnapshotTest,
+    CoderGitSnapshotHardeningTest,
     StageSnapshotTelemetryTest,
     AdjacentLowHardeningTest,
     FlowLockTest,
     SignalCleanupTest,
     ProcessIdentityTest,
     DirectRunnerIdentityPreflightTest,
+    SupervisorIsolationTest,
+    FlowInputContainmentTest,
     HandoffDrainTest,
     TimeoutExitCodeTest,
+    CommittedRangeCiTest,
     PreflightTimeoutTest,
 )
 

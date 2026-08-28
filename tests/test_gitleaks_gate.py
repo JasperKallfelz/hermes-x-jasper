@@ -1,143 +1,195 @@
-"""Enforce the deterministic Gitleaks release gate and its narrowness.
+"""Adversarial tests for the exact pinned Gitleaks release binary and gate."""
+from __future__ import annotations
 
-Two things are proven here whenever a pinned ``gitleaks`` is available:
-
-1. The shipped ``.gitleaks.toml`` clears this repo's known-immutable historical
-   false positives AND the current working tree — both scans exit clean.
-2. The rule-bound, commit+path-scoped allowlist is *narrow*: a brand-new
-   high-entropy secret committed to the very same path in a different commit is
-   still reported. A global allowlist was shown (gitleaks 8.30.1) to hide such a
-   canary even with ``condition = "AND"``; the rule-bound form does not.
-
-No real-looking secret is stored in this file. Both canary tokens are generated
-at runtime.
-"""
+import hashlib
 import json
 import os
+import platform
 import random
+from pathlib import Path
 import shutil
 import string
 import subprocess
+import tarfile
+import tempfile
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
+
 
 REPO = Path(__file__).resolve().parents[1]
-GITLEAKS = shutil.which("gitleaks")
+VERSION = "8.30.1"
+DEFAULT_BINARY = REPO / ".tools" / "gitleaks" / VERSION / "gitleaks"
+GITLEAKS = Path(os.environ.get("HERMES_TEST_GITLEAKS", DEFAULT_BINARY))
 
 
-def _high_entropy_token(tag: str) -> str:
-    """A realistic, high-entropy secret built at runtime (never stored static)."""
+def token(tag: str) -> str:
     rng = random.Random("gitleaks-canary::" + tag)
-    return "".join(rng.choice(string.ascii_letters + string.digits) for _ in range(40))
+    return "".join(rng.choice(string.ascii_letters + string.digits) for _ in range(48))
 
 
-def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(root),
-         "-c", "user.email=test@example.com", "-c", "user.name=test",
-         "-c", "commit.gpgsign=false", *args],
-        capture_output=True, text=True, env=env, check=True,
+        ["git", "-C", str(root), "-c", "user.name=Fixture",
+         "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", *args],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
     )
 
 
-@unittest.skipUnless(GITLEAKS, "gitleaks not installed")
 class GitleaksGateTest(unittest.TestCase):
-    def test_release_gate_script_reports_current_tree_and_history_clean(self):
-        sentinel = REPO / "tests" / "__pycache__" / "gitleaks-cache-sentinel.bin"
-        sentinel.parent.mkdir(exist_ok=True)
-        sentinel.write_bytes(b"cache sentinel must survive\n")
-        try:
-            proc = subprocess.run(
-                ["bash", str(REPO / "scripts" / "gitleaks_scan.sh")],
-                capture_output=True, text=True,
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not GITLEAKS.is_file():
+            raise AssertionError(
+                f"pinned Gitleaks missing at {GITLEAKS}; run scripts/install_gitleaks.sh"
             )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn("clean", proc.stdout)
-            self.assertEqual(sentinel.read_bytes(), b"cache sentinel must survive\n")
-        finally:
-            sentinel.unlink(missing_ok=True)
+        version = subprocess.run(
+            [str(GITLEAKS), "version"], text=True, capture_output=True, check=False
+        )
+        if version.returncode or version.stdout.strip() != VERSION:
+            raise AssertionError("adversarial tests require exactly Gitleaks 8.30.1")
 
-    def test_script_detects_uncommitted_same_path_canary_without_mutating_cache(self):
-        with TemporaryDirectory() as td:
+    def make_gate_repo(self, root: Path) -> None:
+        (root / "scripts").mkdir(parents=True)
+        (root / "security").mkdir()
+        shutil.copy2(REPO / "scripts/gitleaks_scan.sh", root / "scripts")
+        shutil.copy2(REPO / "scripts/install_gitleaks.sh", root / "scripts")
+        shutil.copy2(REPO / ".gitleaks.toml", root)
+        git(root, "init", "--quiet")
+        (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "--quiet", "-m", "safe")
+
+        os_name = "darwin" if platform.system() == "Darwin" else "linux"
+        arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "x64"
+        asset = f"gitleaks_{VERSION}_{os_name}_{arch}.tar.gz"
+        tool_dir = root / ".tools" / "gitleaks" / VERSION
+        tool_dir.mkdir(parents=True)
+        binary = tool_dir / "gitleaks"
+        shutil.copy2(GITLEAKS.resolve(), binary)
+        binary.chmod(0o755)
+        archive = tool_dir / asset
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(binary, arcname="gitleaks")
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        (root / "security/gitleaks-8.30.1.sha256").write_text(
+            f"{digest}  {asset}\n", encoding="utf-8"
+        )
+
+    def run_gate(self, root: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(root / "scripts/gitleaks_scan.sh")],
+            cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    def test_shipped_config_clears_current_tree_and_full_history(self) -> None:
+        for mode, source in (("dir", REPO), ("git", REPO)):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    [str(GITLEAKS), mode, str(source), "--config", str(REPO / ".gitleaks.toml"),
+                     "--redact", "--no-banner", "--ignore-gitleaks-allow"],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_gate_rejects_inline_allow_canary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            scripts = root / "scripts"
-            scripts.mkdir()
-            shutil.copy2(REPO / "scripts" / "gitleaks_scan.sh", scripts)
-            shutil.copy2(REPO / ".gitleaks.toml", root)
-            _git(root, "init", "-q")
-            fixture = root / "tests" / "test_audit_public.py"
+            self.make_gate_repo(root)
+            (root / "inline.py").write_text(
+                'api_key = "' + token("inline") + '"  # gitleaks:allow\n', encoding="utf-8"
+            )
+            result = self.run_gate(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("current-tree secrets found", result.stdout)
+
+    def test_gate_rejects_any_unreviewed_ignore_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.make_gate_repo(root)
+            (root / ".gitleaksignore").write_text(
+                "deadbeef:fixture.py:generic-api-key:1\n", encoding="utf-8"
+            )
+            result = self.run_gate(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("unreviewed .gitleaksignore", result.stderr)
+
+    def test_gate_rejects_an_ignored_unreviewed_gitleaksignore(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.make_gate_repo(root)
+            (root / ".gitignore").write_text(".gitleaksignore\n", encoding="utf-8")
+            (root / ".gitleaksignore").write_text("ignored-fingerprint\n", encoding="utf-8")
+            result = self.run_gate(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("unreviewed .gitleaksignore", result.stderr)
+
+    def test_rule_bound_allowlist_does_not_hide_new_same_path_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            git(root, "init", "--quiet")
+            fixture = root / "tests/test_audit_public.py"
             fixture.parent.mkdir()
-            fixture.write_text("# clean tracked fixture\n", encoding="utf-8")
-            (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
-            _git(root, "add", "-A")
-            _git(root, "commit", "-q", "-m", "clean")
-
-            cache_sentinel = root / "tests" / "__pycache__" / "sentinel"
-            cache_sentinel.parent.mkdir()
-            cache_sentinel.write_text("preserve me\n", encoding="utf-8")
-            canary = _high_entropy_token("working-tree")
-            fixture.write_text('api_key = "' + canary + '"\n', encoding="utf-8")
-
-            proc = subprocess.run(
-                ["bash", str(scripts / "gitleaks_scan.sh")],
-                cwd=root, capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-            self.assertIn("current-tree secrets found", proc.stdout)
-            self.assertEqual(cache_sentinel.read_text(), "preserve me\n")
-
-    def test_rule_bound_allowlist_still_reports_a_new_same_path_canary(self):
-        with TemporaryDirectory() as td:
-            root = Path(td)
-            _git(root, "init", "-q")
-            fixture = root / "tests" / "test_audit_public.py"
-            fixture.parent.mkdir(parents=True)
-
-            # commit A: a fixture we will explicitly allowlist by commit + path
-            allowlisted = _high_entropy_token("A")
-            fixture.write_text('KEY = "' + allowlisted + '"\n')
-            _git(root, "add", "-A")
-            _git(root, "commit", "-q", "-m", "A")
-            commit_a = _git(root, "rev-parse", "HEAD").stdout.strip()
-
-            # rule-bound (NOT global) allowlist scoped to commit A + this exact path
-            (root / ".gitleaks.toml").write_text(
+            allowed = token("old")
+            fixture.write_text('api_key = "' + allowed + '"\n', encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "--quiet", "-m", "old")
+            old_commit = git(root, "rev-parse", "HEAD").stdout.strip()
+            config = root / ".gitleaks.toml"
+            config.write_text(
                 "[extend]\nuseDefault = true\n\n"
                 '[[rules]]\nid = "generic-api-key"\n\n'
-                "  [[rules.allowlists]]\n"
-                '  condition = "AND"\n'
-                '  commits = ["' + commit_a + '"]\n'
-                "  paths = ['''tests/test_audit_public\\.py''']\n"
+                "  [[rules.allowlists]]\n  condition = \"AND\"\n"
+                f'  commits = ["{old_commit}"]\n'
+                "  paths = ['''tests/test_audit_public\\.py''']\n",
+                encoding="utf-8",
             )
-            config = str(root / ".gitleaks.toml")
+            fixture.write_text(
+                'api_key = "' + allowed + '"\napi_key = "' + token("new") + '"\n',
+                encoding="utf-8",
+            )
+            git(root, "add", "-A")
+            git(root, "commit", "--quiet", "-m", "new")
+            new_commit = git(root, "rev-parse", "HEAD").stdout.strip()
+            report = root / "report.json"
+            result = subprocess.run(
+                [str(GITLEAKS), "git", str(root), "--config", str(config), "--no-banner",
+                 "--ignore-gitleaks-allow", "--report-format", "json", "--report-path", str(report)],
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            findings = json.loads(report.read_text())
+            commits = {item.get("Commit") for item in findings}
+            self.assertIn(new_commit, commits)
+            self.assertNotIn(old_commit, commits)
 
-            # commit A's fixture is suppressed -> history is clean
-            rc_a = subprocess.run(
-                ["gitleaks", "git", str(root), "--config", config, "--no-banner"],
-            ).returncode
-            self.assertEqual(rc_a, 0, "allowlisted historical fixture should be clean")
+    def test_installer_is_workspace_local_checksum_pinned_and_sudo_free(self) -> None:
+        script = (REPO / "scripts/install_gitleaks.sh").read_text(encoding="utf-8")
+        self.assertIn('VERSION="8.30.1"', script)
+        self.assertIn("security/gitleaks-8.30.1.sha256", script)
+        self.assertIn("sha256_file", script)
+        self.assertIn(".tools/gitleaks", script)
+        self.assertNotIn("sudo", script)
 
-            # commit B: a NEW high-entropy canary at the SAME path, different commit.
-            # Use a secret-keyword assignment so generic-api-key can fire on it.
-            canary = _high_entropy_token("B")
-            fixture.write_text('KEY = "' + allowlisted + '"\napi_key = "' + canary + '"\n')
-            _git(root, "add", "-A")
-            _git(root, "commit", "-q", "-m", "B")
-            commit_b = _git(root, "rev-parse", "HEAD").stdout.strip()
-
-            report = root / "out.json"
-            rc_b = subprocess.run(
-                ["gitleaks", "git", str(root), "--config", config, "--no-banner",
-                 "--report-format", "json", "--report-path", str(report)],
-            ).returncode
-            self.assertEqual(rc_b, 1, "a new same-path canary must NOT be hidden")
-
-            findings = json.loads(report.read_text()) if report.exists() else []
-            leak_commits = {f.get("Commit") for f in findings}
-            self.assertIn(commit_b, leak_commits, "the new canary commit must be reported")
-            self.assertNotIn(commit_a, leak_commits, "the allowlisted commit must stay suppressed")
+    def test_version_mismatch_is_fatal_even_when_test_archive_checksum_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.make_gate_repo(root)
+            tool_dir = root / ".tools/gitleaks" / VERSION
+            binary = tool_dir / "gitleaks"
+            binary.write_text("#!/bin/sh\necho not-a-version\n", encoding="utf-8")
+            binary.chmod(0o755)
+            archive = next(tool_dir.glob("*.tar.gz"))
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.add(binary, arcname="gitleaks")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            (root / "security/gitleaks-8.30.1.sha256").write_text(
+                f"{digest}  {archive.name}\n", encoding="utf-8"
+            )
+            result = subprocess.run(
+                ["bash", str(root / "scripts/install_gitleaks.sh"), "--verify-only"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("version verification", result.stderr)
 
 
 if __name__ == "__main__":

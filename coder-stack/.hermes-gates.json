@@ -13,7 +13,15 @@
         "tests",
         "-q"
       ],
-      "timeout_seconds": 600
+      "timeout_seconds": 900
+    },
+    {
+      "name": "deep-chat-shell",
+      "argv": [
+        "bash",
+        "tools/deep-chat/tests/test_deep_chat.sh"
+      ],
+      "timeout_seconds": 180
     },
     {
       "name": "py-compile",
@@ -25,11 +33,26 @@
         "py_compile",
         "bin/hermes-coder",
         "bin/hermes-coder-flow",
+        "tools/deep-chat/claude_worker.py",
+        "tests/__init__.py",
         "tests/test_hermes_coder.py",
         "tests/test_hermes_coder_flow.py",
-        "tests/test_security_hardening.py"
+        "tests/test_security_hardening.py",
+        "tests/test_wrappers.py"
       ],
       "timeout_seconds": 120
+    },
+    {
+      "name": "bash-syntax",
+      "argv": [
+        "bash",
+        "-n",
+        "bin/hermes-deep-work",
+        "tools/deep-chat/hermes-deep-chat",
+        "tools/deep-chat/install-local.sh",
+        "tools/deep-chat/tests/test_deep_chat.sh"
+      ],
+      "timeout_seconds": 60
     },
     {
       "name": "diff-check",

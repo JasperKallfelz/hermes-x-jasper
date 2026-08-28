@@ -1,0 +1,135 @@
+name: Pi runtime containment
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-release-and-desktop:
+    name: Pi 1,419-case release and desktop gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_DATE_EPOCH: "1704067200"
+      PI_INSTALL_DIR: ${{ runner.temp }}/hermes-pi-runtime
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11.15"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+      - uses: actions/setup-node@1e60f620b9541dca151540d0cbe7c15dc01afc8f # v4.0.4
+        with:
+          node-version: "22.23.2"
+
+      - name: Install exact feature into a separate checkout
+        run: modules/pi-runtime/setup.sh "$PI_INSTALL_DIR"
+
+      - name: Prove exact patch and 1,419-case no-retry/no-skip release gate
+        run: modules/pi-runtime/verify.sh --object-store "$PI_INSTALL_DIR"
+
+      - name: Verify reviewed npm lock with npm 11.17.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v22.23.2
+          npm_prefix="$RUNNER_TEMP/npm-11.17.0"
+          npm install --prefix "$npm_prefix" --ignore-scripts --no-audit --no-fund npm@11.17.0
+          npm_cli="$npm_prefix/node_modules/npm/bin/npm-cli.js"
+          test "$("$npm_cli" --version)" = 11.17.0
+          cd "$PI_INSTALL_DIR"
+          python3 agent/transports/pi_assets/verify_npm_lock.py --npm "$npm_cli"
+          "$npm_cli" ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run warning-free desktop tests, typecheck, and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm_cli="$RUNNER_TEMP/npm-11.17.0/node_modules/npm/bin/npm-cli.js"
+          cd "$PI_INSTALL_DIR/apps/desktop"
+          output=$(NODE_ENV=test ../../node_modules/.bin/vitest run \
+            src/app/session/hooks/use-prompt-actions/index.test.tsx \
+            src/lib/desktop-slash-commands.test.ts 2>&1)
+          printf '%s\n' "$output"
+          if grep -E 'not wrapped in act|Warning:.*act\(|You called act\(|without await' <<<"$output"; then
+            echo "React act warning detected" >&2
+            exit 1
+          fi
+          "$npm_cli" run typecheck
+          "$npm_cli" run build
+
+  windows-drive-letter:
+    name: Pi Windows drive-letter path-separator gate
+    runs-on: windows-2025
+    timeout-minutes: 15
+    env:
+      PI_INSTALL_DIR: ${{ runner.temp }}/hermes-pi-runtime
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11.15"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+
+      - name: Install exact feature into a separate checkout
+        shell: bash
+        run: modules/pi-runtime/setup.sh "$PI_INSTALL_DIR"
+
+      - name: Sync exact locked dependencies
+        shell: bash
+        working-directory: ${{ runner.temp }}/hermes-pi-runtime
+        run: |
+          uv python install 3.11.15
+          uv sync --locked --python 3.11.15 --extra dev
+
+      - name: Run exact Windows assertion with zero retries and skips
+        shell: bash
+        working-directory: ${{ runner.temp }}/hermes-pi-runtime
+        run: >-
+          uv run --frozen --offline --python 3.11.15
+          scripts/run_tests.sh --file-retries 0 --require-no-skips
+          tests/test_run_tests_parallel.py
+          -k test_drive_letter_colon_is_not_a_path_separator
+
+  arm64-docker:
+    name: Pi linux/arm64 two-build reproducibility and 5-case E2E
+    needs: [linux-release-and-desktop, windows-drive-letter]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      PI_INSTALL_DIR: ${{ runner.temp }}/hermes-pi-runtime
+      PI_IMAGE_ID: sha256:e89f45110e9277902bafbf49009e842bc9e38180e668fea8a6ff3dcdb2dd2cdf
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11.15"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+
+      - name: Assert reviewed Docker and Buildx versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker version --format '{{.Client.Version}}|{{.Server.Version}}')" = "28.0.4|28.0.4"
+          docker buildx version | grep -E '(^|[[:space:]])v?0\.36\.1([[:space:]]|$)'
+          test "$(docker info --format '{{.OSType}}')" = linux
+          docker info --format '{{.Architecture}}' | grep -E '^(arm64|aarch64)$'
+
+      - name: Install exact feature into a separate checkout
+        run: modules/pi-runtime/setup.sh "$PI_INSTALL_DIR"
+
+      - name: Build twice no-cache and run real 5-case containment E2E
+        run: >-
+          modules/pi-runtime/verify.sh --object-store "$PI_INSTALL_DIR"
+          --reproducibility --docker "$PI_IMAGE_ID"

@@ -43,17 +43,23 @@ __pycache__/
 .eggs/
 build/
 dist/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
 .venv/
 venv/
 env/
 .python-version
 .pytest_cache/
+.pytest-cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 *.profraw
 htmlcov/
 .tox/
+.tools/
 
 # --- audio / voice artefacts -------------------------------------------------
 *.mp3
@@ -71,6 +77,12 @@ models/
 *.gguf
 
 # --- logs and scratch --------------------------------------------------------
+.hermes-task.md
+.hermes-result.md
+.hermes-repair-task.md
+.hermes-repair-result.md
+.hermes-pi-module-task.md
+.hermes-pi-module-result.md
 *.log
 logs/
 tmp/

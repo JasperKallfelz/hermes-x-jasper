@@ -1,0 +1,10 @@
+hermes_cli/browser_connect.py
+hermes_cli/config_defaults.py
+plugins/platforms/telegram/adapter.py
+tests/cli/test_cli_browser_connect.py
+tests/gateway/test_telegram_location_keyboard_cleanup.py
+tests/hermes_cli/test_browser_connect_loopback_binding.py
+tests/tools/test_browser_auto_cdp.py
+tests/tools/test_tts_runtime_overrides.py
+tools/browser_tool.py
+tools/tts_tool.py
