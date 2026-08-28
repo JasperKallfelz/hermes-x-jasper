@@ -239,6 +239,16 @@ def test_explicit_uv_path_is_absolute_executable_and_version_pinned(tmp_path: Pa
         pi_module.resolve_uv_executable("relative-uv", manifest)
 
 
+def test_exact_python_uses_current_interpreter_without_uv_download():
+    manifest, _ = pi_module.load_manifest()
+    local = copy.deepcopy(manifest)
+    local["toolchain"]["python"] = ".".join(str(part) for part in sys.version_info[:3])
+    assert pi_module.exact_python_executable(local) == str(Path(sys.executable).resolve())
+    local["toolchain"]["python"] = "0.0.0"
+    with pytest.raises(pi_module.ModuleError, match="Python version"):
+        pi_module.exact_python_executable(local)
+
+
 def test_default_setup_executes_only_git_and_never_runtime_or_global_tools(tmp_path: Path, monkeypatch):
     source, manifest, patch = fixture_contract(tmp_path)
     target = tmp_path / "install"
@@ -274,6 +284,12 @@ def test_docker_mode_rejects_mutable_or_nonmanifest_images_before_docker(value: 
     with pytest.raises(pi_module.ModuleError):
         pi_module.validate_requested_image(value, manifest)
     assert called is False
+
+
+def test_hash_pinned_patch_is_binary_safe_on_windows_checkouts():
+    attributes = (REPO / ".gitattributes").read_text(encoding="utf-8")
+    assert "modules/pi-runtime/*.patch -whitespace -text" in attributes
+    assert "patches/*.patch -whitespace -text" in attributes
 
 
 def test_path_classification_cannot_bypass_module_scripts_manifest_patch_tests_or_workflows():
@@ -330,6 +346,7 @@ def test_ci_has_load_bearing_linux_arm64_windows_and_aggregate_contracts():
     assert "if: needs.changes.outputs.pi_runtime == 'true'" in ci
     assert "ubuntu-24.04-arm" in pi
     assert "windows-2025" in pi
+    assert 'python-version: "3.11.9"' in pi and "--python 3.11.9" in pi
     assert "test_drive_letter_colon_is_not_a_path_separator" in pi
     assert "--file-retries 0 --require-no-skips" in pi
     assert "--reproducibility --docker" in pi and IMAGE_ID in pi

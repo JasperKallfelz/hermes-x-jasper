@@ -535,6 +535,14 @@ def resolve_uv_executable(value: str | None, manifest: Mapping[str, Any]) -> str
     return executable
 
 
+def exact_python_executable(manifest: Mapping[str, Any]) -> str:
+    expected = str(manifest["toolchain"]["python"])
+    actual = ".".join(str(part) for part in sys.version_info[:3])
+    if actual != expected:
+        raise ModuleError(f"Python version is {actual!r}, expected {expected!r}")
+    return str(Path(sys.executable).resolve())
+
+
 def _assert_summary(output: str, expected_passed: int) -> None:
     matches = re.findall(
         r"Summary:.*?([0-9,]+) tests passed, ([0-9,]+) failed, ([0-9,]+) skipped",
@@ -553,12 +561,10 @@ def _assert_summary(output: str, expected_passed: int) -> None:
 def run_offline_release_suite(
     repo: Path, manifest: Mapping[str, Any], offline: bool, uv: str
 ) -> None:
-    toolchain = manifest["toolchain"]
+    python_executable = exact_python_executable(manifest)
     env = _runtime_env(offline=offline)
-    if not offline:
-        run([uv, "python", "install", str(toolchain["python"])], cwd=repo, env=env)
     sync = [
-        uv, "sync", "--locked", "--python", str(toolchain["python"]), "--extra", "dev"
+        uv, "sync", "--locked", "--python", python_executable, "--extra", "dev"
     ]
     if offline:
         sync.append("--offline")
@@ -569,7 +575,7 @@ def run_offline_release_suite(
             raise GapError("offline uv cache/Python is incomplete; the release lane did not run") from exc
         raise
     command = [
-        uv, "run", "--frozen", "--offline", "--python", str(toolchain["python"]),
+        uv, "run", "--frozen", "--offline", "--python", python_executable,
         "scripts/run_pi_release_tests.sh",
     ]
     result = run(command, cwd=repo, env=_runtime_env(offline=True))
@@ -614,17 +620,16 @@ def run_docker_e2e(
     info = _docker_json(image)
     if info.get("Id") != image or info.get("Os") != "linux" or info.get("Architecture") != "arm64":
         raise ModuleError("loaded Docker image identity/platform does not match manifest")
-    toolchain = manifest["toolchain"]
+    python_executable = exact_python_executable(manifest)
     env = _runtime_env()
-    run([uv, "python", "install", str(toolchain["python"])], cwd=repo, env=env)
     run(
-        [uv, "sync", "--locked", "--python", str(toolchain["python"]), "--extra", "dev"],
+        [uv, "sync", "--locked", "--python", python_executable, "--extra", "dev"],
         cwd=repo, env=env,
     )
     test_env = _runtime_env(offline=True)
     test_env["HERMES_TEST_PI_IMAGE"] = image
     result = run(
-        [uv, "run", "--frozen", "--offline", "--python", str(toolchain["python"]),
+        [uv, "run", "--frozen", "--offline", "--python", python_executable,
          "scripts/run_pi_release_tests.sh", "--docker"],
         cwd=repo, env=test_env,
     )

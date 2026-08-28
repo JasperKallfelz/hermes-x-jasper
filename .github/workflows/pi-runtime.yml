@@ -16,6 +16,10 @@ jobs:
       PI_INSTALL_DIR: ${{ github.workspace }}/../hermes-pi-runtime
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11.15"
@@ -71,6 +75,10 @@ jobs:
       PI_INSTALL_DIR: ${{ github.workspace }}/../hermes-pi-runtime
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11.9"
@@ -87,14 +95,13 @@ jobs:
         shell: bash
         working-directory: ${{ env.PI_INSTALL_DIR }}
         run: |
-          uv python install 3.11.15
-          uv sync --locked --python 3.11.15 --extra dev
+          uv sync --locked --python 3.11.9 --extra dev
 
       - name: Run exact Windows assertion with zero retries and skips
         shell: bash
         working-directory: ${{ env.PI_INSTALL_DIR }}
         run: >-
-          uv run --frozen --offline --python 3.11.15
+          uv run --frozen --offline --python 3.11.9
           scripts/run_tests.sh --file-retries 0 --require-no-skips
           tests/test_run_tests_parallel.py
           -k test_drive_letter_colon_is_not_a_path_separator
@@ -109,6 +116,10 @@ jobs:
       PI_IMAGE_ID: sha256:e89f45110e9277902bafbf49009e842bc9e38180e668fea8a6ff3dcdb2dd2cdf
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11.15"
