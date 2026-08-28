@@ -27,6 +27,8 @@ if [ -z "$TMP_DIR" ] || [ ! -d "$TMP_DIR" ]; then
   echo "mktemp returned an empty or invalid release-audit directory" >&2
   exit 1
 fi
+TMP_DIR="$(cd "$TMP_DIR" && pwd -P)" \
+  || { echo "could not canonicalize release-audit directory" >&2; exit 1; }
 cleanup() { rm -rf -- "$TMP_DIR"; }
 trap cleanup EXIT
 

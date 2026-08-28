@@ -175,6 +175,8 @@ def test_release_audit_always_names_every_required_gate():
         "--ignore-gitleaks-allow", "release-run.json", "modules/pi-runtime/setup.sh",
     ):
         assert required in script
+    assert 'pwd -P' in script
+    assert '$TMP_DIR/pi-runtime-install' in script
 
 
 def test_tracked_inventory_lists_every_current_and_new_release_input():
