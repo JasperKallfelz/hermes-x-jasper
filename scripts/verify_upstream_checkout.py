@@ -53,7 +53,13 @@ def _paths(root: Path) -> list[str]:
         if raw
     }
     observed = set(tracked)
-    for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+
+    def walk_error(exc: OSError) -> None:
+        raise CheckoutError("checkout contains an unreadable filesystem entry") from exc
+
+    for current, dirs, files in os.walk(
+        root, topdown=True, followlinks=False, onerror=walk_error
+    ):
         current_path = Path(current)
         if current_path == root:
             dirs[:] = [name for name in dirs if name != ".git"]
@@ -75,6 +81,8 @@ def _paths(root: Path) -> list[str]:
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
                 observed.add(candidate.relative_to(root).as_posix())
                 dirs.remove(name)
+            else:
+                observed.add(candidate.relative_to(root).as_posix())
         for name in files:
             observed.add((current_path / name).relative_to(root).as_posix())
     return sorted(observed)
@@ -94,7 +102,7 @@ def _entry(root: Path, relative: str) -> tuple[str, int, bytes] | tuple[str]:
         git_mode = 0o755 if mode & 0o111 else 0o644
         return ("file", git_mode, path.read_bytes())
     if stat.S_ISDIR(metadata.st_mode):
-        return ("directory", mode, b"")
+        return ("directory",)
     return ("special", mode, b"")
 
 

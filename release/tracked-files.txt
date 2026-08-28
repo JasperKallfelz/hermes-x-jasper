@@ -89,6 +89,7 @@ setup.sh
 tests/__init__.py
 tests/fixtures/darwin-git-bin/git
 tests/test_audit_public.py
+tests/test_checkout_manifest.py
 tests/test_coder_stack_snapshot.py
 tests/test_gitleaks_gate.py
 tests/test_merge_config.py
