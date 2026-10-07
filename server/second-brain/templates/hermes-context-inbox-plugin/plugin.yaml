@@ -1,0 +1,7 @@
+name: hermes-context-inbox
+version: 0.1.0
+description: Passive gateway observer plus optional typed Second Brain intake staging.
+provides_hooks:
+  - pre_gateway_dispatch
+provides_tools:
+  - second_brain_intake

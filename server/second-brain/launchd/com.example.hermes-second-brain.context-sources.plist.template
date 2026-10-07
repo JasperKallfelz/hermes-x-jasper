@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.hermes-second-brain.context-sources</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__PROJECT_DIR__/scripts/context_watch.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PROJECT_DIR</key>
+    <string>__PROJECT_DIR__</string>
+    <key>PYTHON</key>
+    <string>__PYTHON__</string>
+    <key>CONTEXT_IMPORT_DIR</key>
+    <string>__HOME__/.hermes/second-brain/import</string>
+    <key>CONTEXT_DB</key>
+    <string>__HOME__/.hermes/second-brain/context-inbox.sqlite3</string>
+    <key>CONTEXT_SOURCE_DB</key>
+    <string>__HOME__/.hermes/second-brain/context-sources.sqlite3</string>
+    <key>CONTEXT_EXPORT</key>
+    <string>__HOME__/.hermes/second-brain/import/context/context-inbox.txt</string>
+    <key>CONTEXT_INGRESS_DIR</key>
+    <string>__HOME__/.hermes/second-brain/context-ingress</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/context-sources.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/context-sources.stderr.log</string>
+</dict>
+</plist>

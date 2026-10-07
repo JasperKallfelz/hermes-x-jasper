@@ -32,14 +32,14 @@ skip() { printf '%s  SKIP%s %s\n' "$YELLOW" "$NC" "$*"; }
 
 # --- 1. shell syntax -------------------------------------------------------
 step "Shell syntax"
-for script in setup.sh verify.sh scripts/gitleaks_scan.sh messaging/*.sh; do
+for script in setup.sh setup-server.sh verify.sh scripts/gitleaks_scan.sh messaging/*.sh; do
   if bash -n "$script" 2>/dev/null; then pass "bash -n $script"; else
     bash -n "$script"; fail "bash -n $script"
   fi
 done
 if ! command -v shellcheck >/dev/null 2>&1; then
   fail "shellcheck missing — install it first"
-elif shellcheck -S warning setup.sh verify.sh scripts/gitleaks_scan.sh messaging/*.sh; then
+elif shellcheck -S warning setup.sh setup-server.sh verify.sh scripts/gitleaks_scan.sh messaging/*.sh; then
   pass "shellcheck"
 else
   fail "shellcheck"
@@ -87,6 +87,15 @@ else
 fi
 
 # --- 4. leak audit ---------------------------------------------------------
+step "Current server snapshot"
+if python3 scripts/verify_server_snapshot.py && (
+  cd server/second-brain && PYTHONPATH=src PYTHONWARNINGS=ignore::ResourceWarning python3 -m unittest discover -s tests -q
+); then
+  pass "server integrity and Second Brain regression suite"
+else
+  fail "server snapshot checks"
+fi
+
 step "Public audit"
 if python3 scripts/audit_public.py "$REPO_DIR" --history; then
   pass "no secrets/PII/local paths"

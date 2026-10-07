@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Deployment template only. Replace both placeholders, then copy the rendered
+# file under ~/.hermes/scripts/ for a Hermes no-agent cron job.
+set -euo pipefail
+
+readonly BRAIN_PROJECT_DIR="__PROJECT_DIR__"
+readonly BRAIN_CONFIG_PATH="__CONFIG_PATH__"
+
+[[ "${BRAIN_PROJECT_DIR}" = /* ]] || exit 2
+[[ "${BRAIN_CONFIG_PATH}" = /* ]] || exit 2
+[[ -f "${BRAIN_PROJECT_DIR}/scripts/dream_morning_report.py" ]] || exit 2
+[[ -f "${BRAIN_CONFIG_PATH}" ]] || exit 2
+
+exec /usr/bin/env python3.11 \
+  "${BRAIN_PROJECT_DIR}/scripts/dream_morning_report.py" \
+  --config "${BRAIN_CONFIG_PATH}"

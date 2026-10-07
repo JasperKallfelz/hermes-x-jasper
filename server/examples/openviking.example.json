@@ -1,0 +1,19 @@
+{
+  "storage": {"workspace": "/path/to/your/private/openviking-data"},
+  "server": {"host": "127.0.0.1", "port": 1933},
+  "embedding": {
+    "dense": {
+      "provider": "YOUR_EMBEDDING_PROVIDER",
+      "model": "YOUR_EMBEDDING_MODEL",
+      "api_base": "YOUR_EMBEDDING_ENDPOINT",
+      "api_key": "",
+      "dimension": 0
+    }
+  },
+  "vlm": {
+    "provider": "YOUR_MODEL_PROVIDER",
+    "model": "YOUR_MODEL",
+    "api_base": "YOUR_MODEL_ENDPOINT",
+    "api_key": ""
+  }
+}

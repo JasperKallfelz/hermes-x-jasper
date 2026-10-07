@@ -1,0 +1,2348 @@
+"""AutoTitler 核心逻辑测试。"""
+
+import contextvars
+import json
+import sys
+import threading
+import time
+import types
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from hermes_auto_titler.config import DEFAULTS
+from hermes_auto_titler.messages import display_width, load_context, load_context_with_summary
+from hermes_auto_titler.state import StateStore
+from hermes_auto_titler.titler import AutoTitler
+
+
+class FakeDB:
+    TITLE_SOURCE_DERIVED = "derived"
+    TITLE_SOURCE_LLM = "llm"
+    TITLE_SOURCE_USER = "user"
+    MAX_TITLE_LENGTH = 100
+
+    def __init__(self, messages=None, title=None, source=None, conflict_titles=None, sessions=None):
+        self.messages = messages or []
+        self.title = title
+        self.source = source
+        self.conflict_titles = conflict_titles or set()
+        self.sessions = sessions or []
+        self.calls = []
+        # 模拟「插件 set_session_title 之后、恢复来源之前用户 /title 抢先」的竞态
+        self.override_after_set_session_title = None
+
+    def get_messages_as_conversation(self, session_id, include_ancestors=False):
+        return self.messages
+
+    def get_session_title(self, sid):
+        return self.title
+
+    def get_session_title_source(self, sid):
+        return self.source
+
+    def _check_conflict(self, title):
+        if title in self.conflict_titles:
+            raise ValueError(f"Title '{title}' is already in use by session 123")
+
+    def set_auto_title(self, sid, title, *, source):
+        self.calls.append(("set_auto_title", title, source))
+        self._check_conflict(title)
+        # 模拟上游 precedence：derived → llm 是升级（允许），
+        # llm → llm 同级 no-op（防自我重命名），user 标题永不覆盖
+        rank = {None: 0, "derived": 1, "llm": 2, "user": 3}
+        if rank.get(self.source, 0) < rank.get(source, 0):
+            self.title = title
+            self.source = source
+            return True
+        return False
+
+    def set_session_title(self, sid, title):
+        self.calls.append(("set_session_title", title))
+        self._check_conflict(title)
+        if self.title == title:
+            return False
+        self.title = title
+        self.source = "user"  # 模拟上游：user 级写
+        if self.override_after_set_session_title:
+            self.title, self.source = self.override_after_set_session_title
+        return True
+
+    def set_session_title_source(self, sid, source):
+        self.calls.append(("set_session_title_source", source))
+        self.source = source
+
+    def list_sessions_rich(self, limit=20, min_message_count=0, include_children=False):
+        return self.sessions
+
+
+class FakeLlm:
+    def __init__(self, text, usage=None, model="fake-model", provider="fake-provider"):
+        self.text = text
+        self.usage = usage
+        self.model = model
+        self.provider = provider
+        self.calls = []
+
+    def complete(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            text=self.text, model=self.model, provider=self.provider, usage=self.usage
+        )
+
+
+def make_titler(db, text=None, cfg=None, fake_time=None):
+    cfg = {**DEFAULTS, **(cfg or {})}
+    ctx = SimpleNamespace(llm=FakeLlm(text))
+    t = AutoTitler(ctx, cfg, db=db)
+    if fake_time is not None:
+        t._last_eval = {}
+    return t, ctx
+
+
+def _dec(action="keep", title=""):
+    import json
+
+    return json.dumps({"action": action, "title": title})
+
+
+class RecordingThread:
+    """同步替身：记录 target 但不真正启动，测试手动 run_now 驱动（确定性）。"""
+
+    instances: "list[RecordingThread]" = []
+
+    def __init__(self, target=None, args=(), kwargs=None, *, daemon=None, name=""):
+        self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
+        RecordingThread.instances.append(self)
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def run_now(self):
+        self.target(*self.args, **self.kwargs)
+
+
+@pytest.fixture
+def recording_threads(monkeypatch):
+    RecordingThread.instances = []
+    monkeypatch.setattr("hermes_auto_titler.titler.threading.Thread", RecordingThread)
+    return RecordingThread
+
+
+def run_recorded(rt) -> None:
+    for th in list(rt.instances):
+        if not getattr(th, "ran", False):
+            th.ran = True
+            th.run_now()
+
+
+def _blocking_llm(entered, release):
+    class BlockingLlm:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, **kw):
+            self.calls.append(kw)
+            entered.set()
+            release.wait(5)
+            return SimpleNamespace(text=_dec("keep"))
+
+    return BlockingLlm()
+
+
+def _wait_inflight_clear(t, sid, timeout=5.0):
+    deadline = time.time() + timeout
+    while sid in t._inflight and time.time() < deadline:
+        time.sleep(0.005)
+
+
+MSGS = [
+    {"role": "user", "content": "帮我看看 Test 空转的问题"},
+    {"role": "assistant", "content": "我查了日志，是 wake 重放导致的"},
+    {"role": "user", "content": "那我们怎么修"},
+    {"role": "assistant", "content": "方案是 throttle 重放"},
+]
+
+
+def test_user_title_never_overwritten():
+    db = FakeDB(messages=MSGS, title="用户手改", source="user")
+    t, ctx = make_titler(db)
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "skipped"
+    assert ctx.llm.calls == []  # 不调模型
+    assert db.title == "用户手改"
+
+
+def test_untitled_session_uses_auto_title_llm():
+    db = FakeDB(messages=MSGS, title=None, source=None)
+    t, _ = make_titler(db, text=_dec("rename", "Test 空转排查"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "Test 空转排查"
+    assert ("set_auto_title", "Test 空转排查", "llm") in db.calls
+
+
+def test_legacy_titled_session_is_protected():
+    # NULL provenance + 已有标题：Hermes 官方按 user 权威对待（_title_rank），
+    # llm 写不进去。插件应显式跳过而不是报 failed。
+    db = FakeDB(messages=MSGS, title="旧自动标题", source=None)
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "skipped"
+    assert r["reason"] == "legacy title (NULL provenance) is protected"
+    assert ctx.llm.calls == []  # 不调模型
+    assert db.title == "旧自动标题"
+
+
+def test_auto_title_can_be_updated_and_stays_llm():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, _ = make_titler(db, text=_dec("rename", "Test 空转排查"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "Test 空转排查"
+    assert ("set_session_title", "Test 空转排查") in db.calls
+    assert ("set_session_title_source", "llm") in db.calls  # 恢复可升级性
+
+
+def test_keep_does_not_write():
+    db = FakeDB(messages=MSGS, title="Test 空转排查", source="llm")
+    t, _ = make_titler(db, text=_dec("keep"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"
+    assert db.calls == []
+
+
+def test_evaluate_logs_capture_shape_and_parsed_llm_result(caplog):
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, _ = make_titler(db, text=_dec("keep"))
+    with caplog.at_level("INFO", logger="hermes_auto_titler.titler"):
+        t.evaluate("s1", force=True)
+    joined = "\\n".join(caplog.messages)
+    assert "captured current='旧标题'" in joined
+    assert "opening=" in joined and "recent=" in joined and "users=" in joined
+    assert "llm result action=keep" in joined
+    assert "帮我看看" not in joined  # audit log records shape, not conversation text
+
+
+def test_rename_to_same_title_is_keep():
+    db = FakeDB(messages=MSGS, title="Test 空转排查", source="llm")
+    t, _ = make_titler(db, text=_dec("rename", "Test 空转排查"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"
+
+
+def test_throttle_skips_frequent_evaluations():
+    db = FakeDB(messages=MSGS, title="已有会话", source="llm")
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t.evaluate("s1", force=True)
+    n = len(ctx.llm.calls)
+    r = t.evaluate("s1", force=False)
+    assert r["action"] == "throttled"
+    assert len(ctx.llm.calls) == n
+    # force=True 不受节流限制
+    r2 = t.evaluate("s1", force=True)
+    assert r2["action"] in ("keep", "renamed")
+
+
+def test_every_n_turns_trigger(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    # 显式 builtin 让插件首轮避让，测试单纯的 every_n_turns 节奏
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 3, "first_title_mode": "builtin"})
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 0  # 第 1 轮不评估
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 0  # 第 2 轮不评估
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 1  # 第 3 轮提交评估
+    assert ctx.llm.calls == []  # 评估在 worker 中，hook 未同步执行
+    run_recorded(recording_threads)
+    assert len(ctx.llm.calls) == 1
+
+
+def test_close_signal_with_reason_queues_without_network(tmp_path):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 10})
+    t._state_path = tmp_path / "state.json"
+
+    t.on_session_end(session_id="s1", reason="shutdown", interrupted=True)
+
+    assert ctx.llm.calls == []
+    assert t._finalize_intents["s1"]["reason"] == "finalize"
+    state = json.loads(t._state_path.read_text(encoding="utf-8"))
+    saved = state["sessions"]["s1"]
+    assert saved["finalize_intent"] is True
+    assert saved["finalize"]["reason"] == "finalize"
+
+    # finalize 是同一关闭入口：重复信号更新同一条记录，不发起第二条任务。
+    t.on_session_end(session_id="s1", reason="shutdown", interrupted=True)
+    state = json.loads(t._state_path.read_text(encoding="utf-8"))
+    assert list(state["sessions"]) == ["s1"]
+    assert ctx.llm.calls == []
+
+
+def test_bare_interruption_not_counted_or_evaluated(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t.on_session_end(session_id="s1", completed=False, interrupted=True)
+    t.on_session_end(session_id="s1", completed=False, failed=True)
+    t.on_session_end(session_id="s1", completed=False)
+    assert recording_threads.instances == []
+    assert ctx.llm.calls == []
+    assert t._turns.get("s1") is None  # 未计轮数
+    t.on_session_end(session_id="s1", completed=True)
+    assert t._turns["s1"] == 1  # 完成轮次从 1 起计
+    assert len(recording_threads.instances) == 1
+
+
+def test_bg_review_thread_ignored(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    cur = threading.current_thread()
+    old_name = cur.name
+    cur.name = "bg-review"
+    try:
+        t.on_session_end(session_id="s1", completed=True, platform="desktop")
+        t.on_session_finalize(session_id="s1", platform="desktop", reason="session_boundary")
+    finally:
+        cur.name = old_name
+    assert recording_threads.instances == []
+    assert t._turns.get("s1") is None
+    assert ctx.llm.calls == []
+
+
+def test_subagent_platform_ignored(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t.on_session_end(session_id="s1", completed=True, platform="subagent")
+    assert recording_threads.instances == []
+    assert t._turns.get("s1") is None
+    # 前台轮次不受影响
+    t.on_session_end(session_id="s1", completed=True, platform="desktop")
+    assert t._turns["s1"] == 1
+    assert len(recording_threads.instances) == 1
+
+
+def test_on_session_end_returns_promptly(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    started = time.time()
+    t.on_session_end(session_id="s1", completed=True)
+    elapsed = time.time() - started
+    assert ctx.llm.calls == []  # 评估未在 hook 内同步执行
+    assert len(recording_threads.instances) == 1
+    assert elapsed < 1.0
+
+
+def test_inflight_dedupe_prevents_duplicate_submission(recording_threads):
+    import threading
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t.on_session_end(session_id="s1", completed=True)  # n=1 → 提交
+    assert len(recording_threads.instances) == 1
+    t._inflight["s1"] = threading.Event()  # 模拟 worker 仍在飞行
+    t.on_session_end(session_id="s1", completed=True)  # n=2 → in-flight 标记 dirty
+    t.on_session_end(session_id="s1", completed=True)  # n=3 → 继续合并
+    assert len(recording_threads.instances) == 1  # 只有一个后台工作线程
+    run_recorded(recording_threads)
+    # 合并补跑验证：n=1 跑一次，随后检测到 dirty 合并补跑一次最新状态（共 2 次，不盲目丢弃最新上下文）
+    assert len(ctx.llm.calls) == 2
+
+
+def test_async_worker_evaluates_and_dedupes():
+    import threading as _th
+
+    entered, release = _th.Event(), _th.Event()
+    llm = _blocking_llm(entered, release)
+    ctx = SimpleNamespace(llm=llm)
+    t = AutoTitler(ctx, {**DEFAULTS, "every_n_turns": 1}, db=FakeDB(messages=MSGS, title=None))
+    started = time.time()
+    t.on_session_end(session_id="s1", completed=True)
+    # hook 已返回；若同步执行，主线程此刻应仍卡在 complete()（模型被阻塞 ≥5s）
+    assert time.time() - started < 2
+    assert not release.is_set()
+    assert entered.wait(5)  # worker 已进入模型调用
+    t.on_session_end(session_id="s1", completed=True)  # n=2：in-flight 期间到达，标记 dirty
+    release.set()
+    _wait_inflight_clear(t, "s1")
+    # n=1 执行完毕后检测到 dirty 自动合并补跑一次，总计 2 次
+    assert len(llm.calls) == 2
+
+
+def test_finalize_queues_once_without_network(tmp_path):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t._state_path = tmp_path / "state.json"
+
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+
+    assert ctx.llm.calls == []
+    state = json.loads(t._state_path.read_text(encoding="utf-8"))
+    assert list(state["sessions"]) == ["s1"]
+
+
+def test_finalize_skips_when_eval_in_flight():
+    import threading as _th
+
+    entered, release = _th.Event(), _th.Event()
+    llm = _blocking_llm(entered, release)
+    t = AutoTitler(SimpleNamespace(llm=llm), {**DEFAULTS, "every_n_turns": 1}, db=FakeDB(messages=MSGS, title=None))
+    t.on_session_end(session_id="s1", completed=True)
+    assert entered.wait(5)
+    # finalize 必须等待现有 in-flight 完成，由后台线程在 0.05s 后释放
+    def _do_release():
+        time.sleep(0.05)
+        release.set()
+    _th.Thread(target=_do_release, daemon=True).start()
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+    _wait_inflight_clear(t, "s1")
+    assert len(llm.calls) == 1  # 关闭不重复发起第二趟评估，且已等待第一趟安全完成
+
+
+def test_close_signal_then_finalize_share_one_queue_record(tmp_path):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t._state_path = tmp_path / "state.json"
+
+    t.on_session_end(session_id="s1", reason="shutdown", interrupted=True)
+    first_epoch = t._finalize_intents["s1"]["close_epoch"]
+    first_queued_at = t._finalize_intents["s1"]["queued_at"]
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+
+    assert ctx.llm.calls == []
+    state = json.loads(t._state_path.read_text(encoding="utf-8"))
+    assert list(state["sessions"]) == ["s1"]
+    assert t._finalize_intents["s1"]["close_epoch"] == first_epoch
+    assert t._finalize_intents["s1"]["queued_at"] == first_queued_at
+
+
+def test_finalize_respects_on_close_disabled():
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"on_close": False})
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+    t.on_session_end(session_id="s1", reason="shutdown", interrupted=True)
+    assert ctx.llm.calls == []
+
+
+def test_fence_released_after_retry_claim_consumes_finalize_intent(
+    recording_threads, tmp_path
+):
+    """A consumed finalize intent must not fence the session forever.
+
+    The fence expresses "an unresolved terminal intent exists".  Once the retry
+    loop has actually evaluated and cleared the intent, later ordinary turns of
+    the same session id must be able to submit again.
+    """
+    db = FakeDB(messages=MSGS, title="已有标题", source="llm")
+    t, ctx = make_titler(
+        db,
+        text=_dec("keep"),
+        cfg={"every_n_turns": 1, "min_interval_minutes": 0},
+    )
+    t._state_path = tmp_path / "state.json"
+
+    # 1. A completed foreground turn still evaluates.
+    t.on_session_end(session_id="s1", completed=True)
+    assert ctx.llm.calls == []
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert len(ctx.llm.calls) == 1
+    assert "s1" not in t._closing_fenced
+    assert "s1" not in t._finalize_intents
+
+    # 2. Close: the session is fenced and a finalize intent is queued.
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+    assert "s1" in t._closing_fenced
+    assert t._finalize_intents["s1"]["close_epoch"] == 1
+
+    # 3. An ordinary submit while fenced is refused.
+    t._submit_eval("s1")
+    assert len(recording_threads.instances) == 1, (
+        "ordinary submit during an open fence dispatched a worker"
+    )
+
+    # 4. The retry loop claims and consumes the intent.
+    t._retry_failed_sessions()
+    assert len(recording_threads.instances) == 2, "retry loop did not claim the intent"
+    run_recorded(recording_threads)
+    assert "s1" not in t._finalize_intents
+    calls_after_claim = len(ctx.llm.calls)
+    assert calls_after_claim == 2
+
+    # 5. The fence must be gone: the same session id can be evaluated again.
+    assert "s1" not in t._closing_fenced, (
+        "closing fence outlived its finalize intent"
+    )
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 3, (
+        "ordinary turn after intent resolution was blocked by a stale fence"
+    )
+    run_recorded(recording_threads)
+    assert len(ctx.llm.calls) == calls_after_claim + 1
+
+    # 6. on_pre_llm_call (first-round naming path) is fenced too, and must
+    #    behave identically.
+    db.title = None  # a fresh untitled session with the same id
+    db.source = None
+    t.on_pre_llm_call(session_id="s1", user_message="hello")
+    assert len(recording_threads.instances) == 4, (
+        "on_pre_llm_call was blocked by a stale fence"
+    )
+    run_recorded(recording_threads)
+    assert len(ctx.llm.calls) == calls_after_claim + 2
+
+
+def test_fence_released_when_finalize_intent_cleared_by_skip(tmp_path):
+    """The intent-clearing skip branches must also release the fence."""
+    db = FakeDB(messages=MSGS, title="已有标题", source="user")
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t._state_path = tmp_path / "state.json"
+
+    t.on_session_finalize(session_id="s1", platform="cli", reason="session_boundary")
+    assert "s1" in t._closing_fenced
+    assert t._finalize_intents["s1"]["close_epoch"] == 1
+
+    # user-authoritative title invalidates the intent
+    result = t.evaluate("s1", force=True)
+    assert result["action"] == "skipped"
+    assert "s1" not in t._finalize_intents
+    assert "s1" not in t._closing_fenced, (
+        "fence survived an intent cleared by an authoritative skip"
+    )
+
+
+def test_restored_finalize_intent_releases_fence_after_claim(recording_threads, tmp_path):
+    """A restart must not fence a session for its whole lifetime either."""
+    path = tmp_path / "state.json"
+    StateStore(path).save(
+        {
+            "s1": {
+                "kind": "finalize",
+                "base_title": "旧标题",
+                "base_title_known": True,
+                "finalize_intent": True,
+                "finalize": {
+                    "attempts": 0,
+                    "next_retry_at": 0,
+                    "capacity": False,
+                    "queued_at": 1.0,
+                    "reason": "finalize",
+                    "close_epoch": 1,
+                },
+            }
+        }
+    )
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t._state_path = path
+    t.restore_state()
+
+    assert "s1" in t._closing_fenced
+    t._retry_failed_sessions()
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert "s1" not in t._finalize_intents
+    assert "s1" not in t._closing_fenced
+
+
+def test_first_title_mode_builtin_suppresses_early(recording_threads):
+    # builtin：明确配置 builtin 时插件首轮不抢（交回内建）
+    db = FakeDB(messages=MSGS, title=None)
+    t, _ = make_titler(db, text=_dec("keep"), cfg={
+        "every_n_turns": 3, "early_turn_eval": True, "first_title_mode": "builtin",
+    })
+    t.on_session_end(session_id="s1", completed=True)  # n=1
+    t.on_session_end(session_id="s1", completed=True)  # n=2
+    assert len(recording_threads.instances) == 0
+    t.on_session_end(session_id="s1", completed=True)  # n=3 正常边界仍评估
+    assert len(recording_threads.instances) == 1
+
+
+def test_first_title_mode_plugin_default_takes_first_turn(recording_threads):
+    # 默认 plugin：第 1 轮就接管
+    db = FakeDB(messages=MSGS, title=None)
+    t, _ = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 3})
+    t.on_session_end(session_id="s1", completed=True)  # n=1 < 3 → 接管提交
+    assert len(recording_threads.instances) == 1
+
+
+def test_first_title_mode_config_validation(tmp_path):
+    from hermes_auto_titler.config import DEFAULTS, load_config
+
+    assert DEFAULTS["first_title_mode"] == "plugin"
+    p = tmp_path / "config.yaml"
+    p.write_text("first_title_mode: builtin\n", encoding="utf-8")
+    assert load_config(path=p)["first_title_mode"] == "builtin"
+    p.write_text("first_title_mode: bogus\n", encoding="utf-8")
+    assert load_config(path=p)["first_title_mode"] == "plugin"  # 非法回退默认
+
+
+def test_early_turn_eval_submits_early_turns(recording_threads):
+    # 旧开关兼容：未配 first_title_mode 时默认 builtin 会压住 early；
+    # 此处显式切 plugin 还原旧行为
+    db = FakeDB(messages=MSGS, title=None)
+    t, _ = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 3, "early_turn_eval": True, "first_title_mode": "plugin"})
+    t.on_session_end(session_id="s1", completed=True)  # n=1 < 3 → 提交
+    run_recorded(recording_threads)  # 完成评估（清 in-flight）
+    t.on_session_end(session_id="s1", completed=True)  # n=2 < 3 → 提交
+    run_recorded(recording_threads)
+    t.on_session_end(session_id="s1", completed=True)  # n=3 == every → 提交
+    run_recorded(recording_threads)
+    assert len(recording_threads.instances) == 3
+    t.on_session_end(session_id="s1", completed=True)  # n=4 → 不提交
+    t.on_session_end(session_id="s1", completed=True)  # n=5 → 不提交
+    assert len(recording_threads.instances) == 3
+    t.on_session_end(session_id="s1", completed=True)  # n=6 → every-N → 提交
+    run_recorded(recording_threads)
+    assert len(recording_threads.instances) == 4
+
+
+def test_early_turn_eval_noop_when_every_n_is_one(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, _ = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1, "early_turn_eval": True, "first_title_mode": "plugin"})
+    for _ in range(4):
+        t.on_session_end(session_id="s1", completed=True)
+        run_recorded(recording_threads)
+    assert len(recording_threads.instances) == 4  # 每轮都提交：early 无额外效果
+
+
+def test_early_turns_still_throttled_by_min_interval(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 5, "early_turn_eval": True, "first_title_mode": "plugin"})
+    t.on_session_end(session_id="s1", completed=True)  # n=1 → 提交
+    run_recorded(recording_threads)  # 评估 #1
+    assert len(ctx.llm.calls) == 1
+    t.on_session_end(session_id="s1", completed=True)  # n=2 → 提交
+    run_recorded(recording_threads)  # min_interval 内 → throttled
+    assert len(ctx.llm.calls) == 1
+
+
+def test_early_turn_eval_off_keeps_old_cadence(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, _ = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 3, "early_turn_eval": False, "first_title_mode": "builtin"})
+    t.on_session_end(session_id="s1", completed=True)
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 0
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 1
+
+
+def test_conflict_adds_suffix():
+    db = FakeDB(messages=MSGS, title=None, conflict_titles={"Test 空转排查"})
+    t, _ = make_titler(db, text=_dec("rename", "Test 空转排查"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "Test 空转排查 (2)"
+    assert db.title == "Test 空转排查 (2)"
+
+
+def test_collision_suffix_trims_base_to_fit_char_cap():
+    db = FakeDB(messages=MSGS, title=None, conflict_titles={"Test 空"})
+    t, _ = make_titler(db, text=_dec("rename", "Test 空转排查"), cfg={"max_title_length": 6})
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "Te (2)"
+    assert len(r["title"]) <= 6
+
+
+def test_collision_suffix_fits_display_width():
+    db = FakeDB(messages=MSGS, title=None, conflict_titles={"一二三四五"})
+    t, _ = make_titler(
+        db, text=_dec("rename", "一二三四五"),
+        cfg={"max_title_length": 16, "max_display_width": 10},
+    )
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "一二三 (2)"
+    assert display_width(r["title"]) <= 10
+
+
+def test_malformed_model_output_records_failure_and_retries():
+    db = FakeDB(messages=MSGS, title="Test 空转排查", source="llm")
+    t, _ = make_titler(db, text="抱歉，我无法完成这个请求。")
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "failed"
+    assert "model call failed" in r.get("reason", "")
+    assert "s1" in t._failed_sessions
+
+
+def test_blind_untitled_keep_is_reported_as_failed():
+    db = FakeDB(messages=MSGS, title=None, source=None)
+    t, _ = make_titler(db, text=_dec("keep"))
+    r = t.evaluate("s1", force=True, blind=True)
+    assert r["action"] == "failed"
+    assert "new title" in r["reason"]
+
+
+def test_blind_untitled_rename_is_still_written():
+    db = FakeDB(messages=MSGS, title=None, source=None)
+    t, _ = make_titler(db, text=_dec("rename", "Test 空转排查"))
+    r = t.evaluate("s1", force=True, blind=True)
+    assert r["action"] == "renamed"
+    assert db.title == "Test 空转排查"
+
+
+def test_derived_rename_uses_atomic_set_auto_title():
+    # derived → llm 是权威升级：必须走 set_auto_title（单事务），
+    # 不出现两步写的 crash window
+    db = FakeDB(messages=MSGS, title="旧标题", source="derived")
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    auto_calls = [c for c in db.calls if c[0] == "set_auto_title"]
+    assert auto_calls and auto_calls[0][1] == "新标题" and auto_calls[0][2] == "llm"
+    assert not any(c[0] == "set_session_title" for c in db.calls)
+
+
+def test_llm_rename_uses_two_step_with_source_restore():
+    # llm → llm：set_auto_title 同级 no-op，走 set_session_title + 恢复 llm 来源
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert ("set_session_title", "新标题") in db.calls
+    assert ("set_session_title_source", "llm") in db.calls
+
+
+def test_llm_restore_skipped_when_user_title_lands_during_two_step():
+    # 竞态：插件 set_session_title 之后、恢复 llm 来源之前用户 /title 抢先
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    db.override_after_set_session_title = ("用户抢先的新标题", "user")
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"))
+    r = t.evaluate("s1", force=True)
+    assert ("set_session_title_source", "llm") not in db.calls  # 不恢复来源
+    assert db.title == "用户抢先的新标题"
+    assert db.source == "user"
+    assert r["action"] == "skipped"  # 权威方胜出，不算 failed
+
+
+def test_write_time_user_title_race_protected():
+    db = FakeDB(messages=MSGS, title=None, source=None)
+
+    class RaceLlm:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, **kw):
+            self.calls.append(kw)
+            # 模拟 LLM 调用（最长 30s）期间用户 /title 落地
+            db.title = "用户手改"
+            db.source = "user"
+            return SimpleNamespace(text=_dec("rename", "模型标题"))
+
+    t = AutoTitler(SimpleNamespace(llm=RaceLlm()), {**DEFAULTS}, db=db)
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "skipped"
+    assert db.title == "用户手改"
+    assert db.source == "user"
+    assert db.calls == []  # 未发生任何写库调用
+
+
+def test_write_time_legacy_title_race_protected():
+    db = FakeDB(messages=MSGS, title=None, source=None)
+
+    class LegacyRaceLlm:
+        def complete(self, **kw):
+            # LLM 调用期间出现 legacy NULL provenance 标题
+            db.title = "旧自动标题"
+            db.source = None
+            return SimpleNamespace(text=_dec("rename", "新标题"))
+
+    t = AutoTitler(SimpleNamespace(llm=LegacyRaceLlm()), {**DEFAULTS}, db=db)
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "skipped"
+    assert db.title == "旧自动标题"
+    assert db.calls == []
+
+
+def test_normalized_candidate_equal_to_current_is_keep():
+    db = FakeDB(messages=MSGS, title="Test 空转排查", source="llm")
+    t, ctx = make_titler(db, text=_dec("rename", '  "Test 空转排查。"  '))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"  # 清洗后与当前相同 → keep，不加后缀、不写库
+    assert db.calls == []
+
+
+def test_title_prefix_and_trailing_punctuation_cleaned():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("rename", "Title: Test 空转排查。"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "Test 空转排查"
+
+
+def test_truncated_candidate_equal_to_current_is_keep():
+    current = "一二三四五六七八九十123456"  # 恰好 16 字符
+    db = FakeDB(messages=MSGS, title=current, source="llm")
+    t, ctx = make_titler(
+        db, text=_dec("rename", current + "7890"), cfg={"max_title_length": 16}
+    )
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"  # 截断后与当前相同 → keep
+
+
+def test_parse_decision_tolerates_markdown_fence():
+    from hermes_auto_titler.titler import _parse_decision
+
+    text = '```json\n{"action": "rename", "title": "Test 空转排查"}\n```'
+    action, title = _parse_decision(text)
+    assert action == "rename"
+    assert title == "Test 空转排查"
+    # 非 JSON 自由文本：返回 error 促发重试，不伪装成合法决策
+    action2, title2 = _parse_decision("我认为应该 rename，标题：修显示器 HDR")
+    assert action2 == "error"
+    assert title2 is None
+
+
+def test_llm_failure_records_failed_retry():
+    db = FakeDB(messages=MSGS, title=None)
+
+    class BoomLlm:
+        def complete(self, **kw):
+            raise RuntimeError("provider down")
+
+    t = AutoTitler(SimpleNamespace(llm=BoomLlm()), {**DEFAULTS}, db=db)
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "failed"
+    assert "model call failed" in r.get("reason", "")
+    assert "s1" in t._failed_sessions
+    assert t._failed_sessions["s1"]["attempts"] == 1
+    assert t._failed_sessions["s1"]["next_retry_at"] > 0
+
+
+def test_title_truncated_to_max_length():
+    db = FakeDB(messages=MSGS, title=None)
+    long = "这是一个非常非常非常非常非常非常非常非常非常非常非常非常非常长的标题测试"
+    t, _ = make_titler(db, text=_dec("rename", long), cfg={"max_title_length": 20})
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert len(r["title"]) <= 20
+
+
+def test_write_truncates_by_display_width():
+    db = FakeDB(messages=MSGS, title=None)
+    # 显式 max_title_length=16：21 个「一」→ 先按字符截到 16 字。
+    t, _ = make_titler(
+        db, text=_dec("rename", "一" * 21), cfg={"max_title_length": 16}
+    )
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert len(r["title"]) == 16
+    assert display_width(r["title"]) <= 40  # 列宽上限也不超
+
+
+def test_write_complete_style_wider_budget():
+    db = FakeDB(messages=MSGS, title=None)
+    # complete 风格列宽 +12：40+12 = 52 列 → 26 个中文字
+    t, _ = make_titler(db, text=_dec("rename", "一" * 30), cfg={"title_style": "complete"})
+    r = t.evaluate("s1", force=True)
+    assert display_width(r["title"]) <= 52
+
+
+def test_derived_long_title_forces_rename_even_when_model_keeps():
+    long_title = "开发个小插件，让 Hermes 每次对话结束都会思考需不需要重命名会话标题。有别的类似项目吗，别…"
+    db = FakeDB(messages=MSGS, title=long_title, source="derived")
+    t, ctx = make_titler(db, text=_dec("keep", long_title))  # 模型说 keep
+    r = t.evaluate("s1", force=True)
+    # force_rename 下模型被要求给新标题；若给了不同标题则 rename
+    assert r["action"] in ("renamed", "keep")
+    if r["action"] == "renamed":
+        assert db.source == "llm"
+
+
+def test_derived_force_is_fail_safe_when_model_ignores_must_rename():
+    # 即使 prompt 要求 derived 必须升级，provider 若仍返回 keep，也要 fail-safe 不写库。
+    db = FakeDB(messages=MSGS, title="Test 空转排查", source="derived")
+    t, _ = make_titler(db, text=_dec("keep"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"
+
+
+def test_short_derived_title_is_provisional_and_forces_model_upgrade():
+    db = FakeDB(messages=MSGS, title="这个文件夹是做什么的", source="derived")
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t.evaluate("s1", force=True)
+    system = ctx.llm.calls[0]["messages"][0]["content"]
+    assert "Return exactly this JSON shape:" in system
+    assert '{"action":"rename","title":"<short title>"}' in system
+    assert "Generate a replacement title" in system
+
+
+def test_generate_uses_display_language_for_title_instruction(monkeypatch):
+    db = FakeDB(messages=MSGS, title=None)
+    fake_i18n = types.ModuleType("agent.i18n")
+    fake_i18n.get_language = lambda: "zh"
+    setattr(fake_i18n, "_normalize_lang", lambda value: value.strip().lower().split("-", 1)[0] or "en")
+    monkeypatch.setitem(sys.modules, "agent.i18n", fake_i18n)
+    t, ctx = make_titler(db, text=_dec("rename", "中文标题"))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"display": {"language": "zh"}, "auxiliary": {"title_generation": {}}},
+    )
+    t.evaluate("s1", force=True)
+    system = ctx.llm.calls[0]["messages"][0]["content"]
+    assert "language code: zh" in system
+    assert "Do not switch to other languages" in system
+
+
+def test_title_generation_uses_zero_temperature():
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t.evaluate("s1", force=True)
+    assert ctx.llm.calls[0]["temperature"] == 0
+
+
+def test_generate_blind_omits_current_title_and_forces_rename():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"))
+    recent, all_user, opening = load_context(db, "s1", recent_turns=2, include_all_user=True)
+    action, title = t._generate("旧标题", recent, all_user, opening, blind=True)
+    assert (action, title) == ("rename", "新标题")
+    system = ctx.llm.calls[0]["messages"][0]["content"]
+    user_prompt = ctx.llm.calls[0]["messages"][1]["content"]
+    assert "Return exactly this JSON shape:" in system
+    assert '{"action":"rename","title":"<short title>"}' in system
+    assert "Generate a replacement title" in system
+    assert "truncated auto-generated" not in system
+    assert "durable subject" in system
+    assert "identifiers exactly" in system
+    assert "当前标题：" not in user_prompt
+    assert "开头内容" in user_prompt
+    assert "Current title:" not in user_prompt
+
+
+def test_default_limit_preserves_literal_repository_identifier_and_intent():
+    db = FakeDB(messages=MSGS, title=None)
+    expected = "hermes-auto-titler补丁审验"
+    t, _ = make_titler(db, text=_dec("rename", expected))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == expected
+
+
+def test_generate_blind_renders_summary_as_primary_historical_context():
+    messages = [
+        {"role": "user", "content": "[Session Arc Summary (d1, node 73)] # 当前焦点：X 项目开发"},
+        {"role": "user", "content": "压缩后的可见开头"},
+        {"role": "assistant", "content": "继续处理"},
+    ]
+    db = FakeDB(messages=messages, title=None)
+    t, ctx = make_titler(db, text=_dec("rename", "X 项目开发"))
+    recent, all_user, opening, summary = load_context_with_summary(
+        db, "s1", recent_turns=2, include_all_user=True, opening_turns=1
+    )
+    action, title = t._generate(
+        None, recent, all_user, opening, blind=True, earlier_summary=summary
+    )
+    assert (action, title) == ("rename", "X 项目开发")
+    prompt = ctx.llm.calls[0]["messages"][1]["content"]
+    opening_block = prompt.split("可见开头", 1)[1].split("历史摘要", 1)[0]
+    assert "Session Arc Summary" not in opening_block
+    assert "历史摘要" in prompt
+    assert "弱提示" not in prompt
+    assert "Session Arc Summary" in prompt
+
+
+def test_generate_nonblind_with_summary_anchors_subject_on_summary():
+    """压缩会话日常评估：摘要升级为主题锚点，失真的可见 opening 降级为局部续段。"""
+    messages = [
+        {"role": "user", "content": "[Session Arc Summary] 主线：账号体系注册运营"},
+        {"role": "user", "content": "为什么 163 邮箱收不到验证码，帮我配置一下"},
+        {"role": "assistant", "content": "查 keychain 和 IMAP"},
+    ]
+    db = FakeDB(messages=messages, title="LINE辅助邮箱配置")
+    t, ctx = make_titler(db, text=_dec("rename", "账号体系注册运营"))
+    recent, all_user, opening, summary = load_context_with_summary(
+        db, "s1", recent_turns=2, include_all_user=True, opening_turns=1
+    )
+    action, title = t._generate(
+        "LINE辅助邮箱配置", recent, all_user, opening,
+        force_rename=False, blind=False, earlier_summary=summary,
+    )
+    assert (action, title) == ("rename", "账号体系注册运营")
+    system = ctx.llm.calls[0]["messages"][0]["content"]
+    user_prompt = ctx.llm.calls[0]["messages"][1]["content"]
+    # 有摘要时：opening 标记为局部续段，摘要提供历史主线
+    assert "可见开头" in user_prompt
+    assert "历史摘要" in user_prompt
+    assert "开头内容（用于识别会话主体和主线）" not in user_prompt
+    assert "历史摘要（原始开头已被压缩；用于识别更早的主线）" in user_prompt
+    assert "弱提示" not in user_prompt
+    assert "压缩后的局部续段" in user_prompt
+    assert "durable subject" in system
+
+
+def test_generate_uses_hermes_title_generation_task():
+    """空 provider/model 时走 Hermes 内建标题辅助任务。"""
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t.evaluate("s1", force=True)
+    call = ctx.llm.calls[0]
+    assert call["task"] == "title_generation"
+    assert "provider" not in call
+    assert "model" not in call
+
+
+def test_generate_forwards_explicit_custom_route():
+    """配置自定义 provider/model 时保留插件独立通道。"""
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t.cfg["provider"] = "example-provider"
+    t.cfg["model"] = "example/model:free"
+    t.evaluate("s1", force=True)
+    call = ctx.llm.calls[0]
+    assert call["provider"] == "example-provider"
+    assert call["model"] == "example/model:free"
+    assert "task" not in call
+
+
+def test_evaluate_blind_with_summary_keeps_user_continuation_but_omits_assistant_tail():
+    messages = [
+        {"role": "user", "content": "[Session Arc Summary] 主线：Hermes 自动标题插件开发"},
+        {"role": "user", "content": "后续持续转向 WSP 搜索配置"},
+        {"role": "assistant", "content": "参数已调整"},
+    ]
+    db = FakeDB(messages=messages, title=None)
+    t, ctx = make_titler(db, text=_dec("rename", "Hermes自动标题插件"))
+    result = t.evaluate("s1", force=True, blind=True)
+    assert result["action"] == "renamed"
+    prompt = ctx.llm.calls[0]["messages"][1]["content"]
+    assert "Hermes 自动标题插件开发" in prompt
+    assert "摘要之后的用户消息" in prompt
+    assert "后续持续转向 WSP 搜索配置" in prompt
+    assert "用户:" in prompt
+    assert "参数已调整" not in prompt
+
+
+class SessionStateDB(FakeDB):
+    """retitle_all 批处理测试：每个会话独立的 title/source 状态与真实写回。
+
+    单例 FakeDB 的 title/source 是全局的，无法表达「每行各自的来源」，
+    会让 user/legacy 断言依赖列表顺序或巧合而假通过——这里改为按 sid 存
+    状态，写回也真实落到对应会话。
+    """
+
+    def __init__(self, sessions, state, messages=None):
+        super().__init__(messages=messages if messages is not None else MSGS)
+        self.sessions = sessions
+        self.state = dict(state)
+        self.calls = []
+
+    def list_sessions_rich(self, limit=20, min_message_count=0, include_children=False):
+        return self.sessions
+
+    def get_session_title(self, sid):
+        return self.state.get(sid, (None, None))[0]
+
+    def get_session_title_source(self, sid):
+        return self.state.get(sid, (None, None))[1]
+
+    def set_auto_title(self, sid, title, *, source):
+        self.calls.append(("set_auto_title", sid, title, source))
+        self.state[sid] = (title, source)
+        return True
+
+    def set_session_title(self, sid, title):
+        self.calls.append(("set_session_title", sid, title))
+        self.state[sid] = (title, "user")
+        return True
+
+    def set_session_title_source(self, sid, source):
+        self.calls.append(("set_session_title_source", sid, source))
+        t, _ = self.state[sid]
+        self.state[sid] = (t, source)
+
+
+def test_retitle_all_skips_user_and_uses_blind():
+    sessions = [
+        {"id": "s1", "title": "旧标题", "message_count": 5},
+        {"id": "s2", "title": "我手改的", "message_count": 5},
+        {"id": "s3", "title": "老标题", "message_count": 5},
+    ]
+    state = {"s1": ("旧标题", "llm"), "s2": ("我手改的", "user"), "s3": ("老标题", None)}
+    db = SessionStateDB(sessions, state)
+    t, ctx = make_titler(db, text=_dec("rename", "盲改标题"))
+    results = t.retitle_all()
+    by_id = {r["session_id"]: r for r in results}
+    assert by_id["s2"]["action"] == "skipped"  # user 手改不动
+    assert by_id["s2"]["reason"] == "user title"
+    assert by_id["s3"]["action"] == "skipped"  # legacy NULL 保护
+    assert by_id["s1"]["action"] == "renamed"
+    assert db.state["s1"] == ("盲改标题", "llm")  # 真实落库且恢复 llm 来源
+    assert db.state["s2"] == ("我手改的", "user")  # 未被动
+    assert db.state["s3"] == ("老标题", None)
+    # blind：prompt 里没有当前标题（只有 s1 会调模型）
+    assert len(ctx.llm.calls) == 1
+    for call in ctx.llm.calls:
+        assert "当前标题：" not in call["messages"][1]["content"]
+
+
+def test_retitle_all_skips_user_and_dry_run():
+    sessions = [
+        {"id": "s-user", "title": "手改"},
+        {"id": "s-auto", "title": "旧自动"},
+        {"id": "s-legacy", "title": "老标题"},
+    ]
+    state = {
+        "s-user": ("手改", "user"),
+        "s-auto": ("旧自动", "llm"),
+        "s-legacy": ("老标题", None),
+    }
+    db = SessionStateDB(sessions, state)
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"))
+    results = t.retitle_all()
+    by_id = {r["session_id"]: r for r in results}
+    assert by_id["s-user"]["action"] == "skipped"
+    assert by_id["s-user"]["reason"] == "user title"
+    assert by_id["s-legacy"]["action"] == "skipped"  # legacy NULL 保护
+    assert by_id["s-auto"]["action"] == "renamed"
+    assert db.state["s-auto"] == ("新标题", "llm")
+    # dry-run 不做模型调用；user 行在 dry-run 之前按实现顺序跳过
+    t2, ctx2 = make_titler(db, text=_dec("rename", "新标题"))
+    results2 = t2.retitle_all(dry_run=True)
+    by2 = {r["session_id"]: r for r in results2}
+    assert by2["s-user"]["action"] == "skipped"  # user 先于 dry-run 跳过
+    assert by2["s-user"]["reason"] == "user title"
+    assert by2["s-auto"]["action"] == "dry-run"
+    assert by2["s-legacy"]["action"] == "dry-run"  # legacy 只在 dry-run 前做 user 检查
+    assert ctx2.llm.calls == []
+
+
+def test_retitle_all_respects_recent_eval_throttle():
+    db = SessionStateDB(
+        sessions=[{"id": "s1", "title": "旧标题", "message_count": 5}],
+        state={"s1": (None, None)},
+    )
+    t, ctx = make_titler(db, text=_dec("keep"))
+    t._last_eval["s1"] = time.time()  # 同一实例刚评估过
+    results = t.retitle_all()
+    assert results[0]["action"] == "throttled"
+    assert ctx.llm.calls == []
+
+
+# -- 用量记账 ---------------------------------------------------------------
+
+def test_auxiliary_usage_recorded_through_sessiondb():
+    usage = SimpleNamespace(
+        input_tokens=1500, output_tokens=40, total_tokens=1540,
+        cache_read_tokens=120, cache_write_tokens=80, cost_usd=0.0012,
+    )
+    db = FakeDB(messages=MSGS, title=None)
+    db.usage_records = []
+    db.record_auxiliary_usage = (
+        lambda sid, task, **kw: db.usage_records.append({"session_id": sid, "task": task, **kw})
+    )
+    ctx = SimpleNamespace(
+        llm=FakeLlm(_dec("keep"), usage=usage, model="deepseek-v4-flash", provider="opencode-go")
+    )
+    t = AutoTitler(ctx, {**DEFAULTS}, db=db)
+    t.evaluate("s1", force=True)
+    assert len(db.usage_records) == 1
+    rec = db.usage_records[0]
+    assert rec["session_id"] == "s1"
+    assert rec["task"] == "hermes_auto_titler"
+    assert rec["model"] == "deepseek-v4-flash"
+    assert rec["billing_provider"] == "opencode-go"
+    assert rec["input_tokens"] == 1500
+    assert rec["output_tokens"] == 40
+    assert rec["cache_read_tokens"] == 120
+    assert rec["cache_write_tokens"] == 80
+    assert rec["estimated_cost_usd"] == 0.0012
+
+
+def test_auxiliary_usage_noop_without_api():
+    db = FakeDB(messages=MSGS, title="已有会话", source="llm")  # 无 record_auxiliary_usage（老宿主/测试 fake）
+    t, ctx = make_titler(db, text=_dec("keep"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"
+    assert len(ctx.llm.calls) == 1  # 记账缺失不影响评估
+
+
+# -- 命令与生命周期注册 -------------------------------------------------------
+
+def test_autotitler_command_defaults_to_english_copy():
+    from hermes_auto_titler.commands import make_handler
+
+    db = FakeDB(messages=MSGS)
+    t, _ = make_titler(db)
+    handler = make_handler(t)
+
+    assert handler("config missing").endswith("(unknown key)")
+    assert handler("unknown").startswith("Usage:")
+    t._current_session = None
+    assert "No active session" in handler("rename-now")
+
+
+def test_status_includes_first_title_mode():
+    from hermes_auto_titler.commands import make_handler
+
+    db = FakeDB(messages=MSGS)
+    t, _ = make_titler(db, cfg={"first_title_mode": "builtin"})
+    out = make_handler(t)("status")
+    assert "first_title=builtin" in out
+    assert "provider=(host default)" in out
+
+
+def test_status_includes_early_turn_eval():
+    from hermes_auto_titler.commands import make_handler
+
+    db = FakeDB(messages=MSGS)
+    t, _ = make_titler(db, cfg={"early_turn_eval": True})
+    out = make_handler(t)("status")
+    assert "early_turn_eval=True" in out
+    assert "provider=(host default)" in out
+
+
+def test_config_command_rejects_invalid_and_accepts_new_keys(monkeypatch):
+    from hermes_auto_titler.commands import make_handler
+
+    saved = []
+    monkeypatch.setattr(
+        "hermes_auto_titler.config.save_config",
+        lambda cfg, path=None: saved.append(dict(cfg)),
+    )
+    db = FakeDB(messages=MSGS)
+    t, _ = make_titler(db)
+    h = make_handler(t)
+    assert "Invalid value" in h("config strategy bogus")
+    assert t.cfg["strategy"] == "conservative"
+    assert "Invalid value" in h("config enabled maybe")  # invalid bool is rejected
+    assert t.cfg["enabled"] is True
+    assert "Invalid value" in h("config every_n_turns abc")
+    assert t.cfg["every_n_turns"] == 2
+    h("config early_turn_eval true")
+    assert t.cfg["early_turn_eval"] is True
+    assert saved and saved[-1]["early_turn_eval"] is True
+    h("config retitle_summary_chars 2000")
+    assert t.cfg["retitle_summary_chars"] == 2000
+    h("config opening_turns 0")
+    assert t.cfg["opening_turns"] == 1  # 边界钳制
+
+
+def test_register_registers_hooks_and_command(monkeypatch):
+    import hermes_auto_titler as pkg
+
+    hooks, cmds, lifecycle = [], [], []
+
+    class FakeCtx:
+        def register_hook(self, name, fn):
+            hooks.append(name)
+
+        def register_command(self, name, handler, **kw):
+            cmds.append(name)
+
+    monkeypatch.setattr(pkg, "load_config", lambda: {**DEFAULTS, "enabled": True})
+    monkeypatch.setattr(pkg.AutoTitler, "restore_state", lambda self: lifecycle.append("restore"))
+    monkeypatch.setattr(pkg.AutoTitler, "start_retry_loop", lambda self: lifecycle.append("start"))
+    pkg.register(FakeCtx())
+    assert "on_session_end" in hooks
+    assert "on_session_finalize" in hooks
+    assert "autotitler" in cmds
+    assert lifecycle == ["restore", "start"]
+
+    hooks.clear()
+    cmds.clear()
+    monkeypatch.setattr(pkg, "load_config", lambda: {**DEFAULTS, "enabled": False})
+    pkg.register(FakeCtx())
+    assert hooks == []  # 禁用时零 hook
+    assert "autotitler" in cmds
+
+
+# -- 内部执行过滤（cron / 大小写 / 标志不一致） -------------------------------
+
+def test_cron_platform_ignored(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t.on_session_end(session_id="s1", completed=True, platform="cron")
+    assert recording_threads.instances == []
+    assert t._turns.get("s1") is None
+    # 大小写不敏感（宿主 cron/scheduler 构造 platform='cron'）
+    t.on_session_end(session_id="s1", completed=True, platform="Cron")
+    assert recording_threads.instances == []
+    assert t._turns.get("s1") is None
+    # finalize 同样排除 cron
+    t.on_session_finalize(session_id="s1", platform="cron", reason="session_boundary")
+    assert ctx.llm.calls == []
+    # 前台轮次不受影响
+    t.on_session_end(session_id="s1", completed=True, platform="desktop")
+    assert t._turns["s1"] == 1
+    assert len(recording_threads.instances) == 1
+
+
+def test_subagent_platform_case_insensitive(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t.on_session_end(session_id="s1", completed=True, platform="SubAgent")
+    assert recording_threads.instances == []
+    assert t._turns.get("s1") is None
+    t.on_session_finalize(session_id="s1", platform="SUBAGENT", reason="session_boundary")
+    assert ctx.llm.calls == []
+
+
+def test_inconsistent_flags_failed_or_interrupted_not_counted(recording_threads):
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    # completed=True 但 failed/interrupted 为真：标志不一致，仍不算完整轮次
+    t.on_session_end(session_id="s1", completed=True, failed=True)
+    t.on_session_end(session_id="s1", completed=True, interrupted=True)
+    assert recording_threads.instances == []
+    assert t._turns.get("s1") is None
+    assert ctx.llm.calls == []
+    t.on_session_end(session_id="s1", completed=True)
+    assert t._turns["s1"] == 1
+    assert len(recording_threads.instances) == 1
+
+
+# -- early_turn_eval 来源门 ---------------------------------------------------
+
+class BrokenSourceDB(FakeDB):
+    def get_session_title_source(self, sid):
+        raise RuntimeError("db down")
+
+
+def _early_titler(db, **cfg):
+    return make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 3, "early_turn_eval": True, "first_title_mode": "plugin", **cfg})
+
+
+def test_early_gate_untitled_submits(recording_threads):
+    db = FakeDB(messages=MSGS, title=None, source=None)
+    t, _ = _early_titler(db)
+    t.on_session_end(session_id="s1", completed=True)  # n=1 < 3
+    assert len(recording_threads.instances) == 1
+
+
+def test_early_gate_derived_submits(recording_threads):
+    db = FakeDB(messages=MSGS, title="旧标题", source="derived")
+    t, _ = _early_titler(db)
+    t.on_session_end(session_id="s1", completed=True)  # n=1 < 3
+    assert len(recording_threads.instances) == 1
+
+
+def test_early_gate_llm_skips_early_but_boundary_eligible(recording_threads):
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = _early_titler(db)
+    t.on_session_end(session_id="s1", completed=True)  # n=1：llm 不提前
+    t.on_session_end(session_id="s1", completed=True)  # n=2：llm 不提前
+    assert recording_threads.instances == []
+    assert ctx.llm.calls == []
+    t.on_session_end(session_id="s1", completed=True)  # n=3：正常边界，llm 仍合格
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert len(ctx.llm.calls) == 1
+
+
+def test_early_gate_user_skips(recording_threads):
+    db = FakeDB(messages=MSGS, title="手改", source="user")
+    t, ctx = _early_titler(db)
+    t.on_session_end(session_id="s1", completed=True)  # n=1：user 不提前
+    t.on_session_end(session_id="s1", completed=True)  # n=2：user 不提前
+    assert recording_threads.instances == []
+    # 正常边界仍提交；evaluate 内部对 user 保护，不产生模型调用
+    t.on_session_end(session_id="s1", completed=True)  # n=3
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert ctx.llm.calls == []
+
+
+def test_early_gate_legacy_skips(recording_threads):
+    db = FakeDB(messages=MSGS, title="旧自动标题", source=None)  # legacy NULL 来源
+    t, ctx = _early_titler(db)
+    t.on_session_end(session_id="s1", completed=True)  # n=1：legacy 已有标题不提前
+    t.on_session_end(session_id="s1", completed=True)  # n=2
+    assert recording_threads.instances == []
+    # 正常边界仍提交；evaluate 内部对 legacy 保护，不产生模型调用
+    t.on_session_end(session_id="s1", completed=True)  # n=3
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert ctx.llm.calls == []
+
+
+def test_early_gate_fail_safe_on_source_error(recording_threads):
+    db = BrokenSourceDB(messages=MSGS, title=None, source=None)
+    t, _ = _early_titler(db)
+    t.on_session_end(session_id="s1", completed=True)  # n=1：来源发现失败 → 不提前提交
+    assert recording_threads.instances == []
+    t.on_session_end(session_id="s1", completed=True)  # n=2
+    assert recording_threads.instances == []
+    t.on_session_end(session_id="s1", completed=True)  # n=3：正常边界不受影响
+    assert len(recording_threads.instances) == 1
+
+
+# -- 异步健壮性：Context 传播 / 线程失败 / DB 单例 ----------------------------
+
+def test_worker_context_propagated_via_host_wrapper(monkeypatch, recording_threads):
+    fake_tools = types.ModuleType("tools")
+    fake_tc = types.ModuleType("tools.thread_context")
+    wrapped = []
+
+    def fake_propagate(target):
+        wrapped.append(True)
+        ctx = contextvars.copy_context()
+
+        def runner(*args, **kwargs):
+            return ctx.run(target, *args, **kwargs)
+
+        return runner
+
+    fake_tc.propagate_context_to_thread = fake_propagate
+    monkeypatch.setitem(sys.modules, "tools", fake_tools)
+    monkeypatch.setitem(sys.modules, "tools.thread_context", fake_tc)
+
+    var = contextvars.ContextVar("autotitler_host_var", default="unset")
+    seen = []
+
+    class ContextLlm:
+        def complete(self, **kw):
+            seen.append(var.get())
+            return SimpleNamespace(text=_dec("keep"))
+
+    db = FakeDB(messages=MSGS, title=None)
+    t = AutoTitler(
+        SimpleNamespace(llm=ContextLlm()), {**DEFAULTS, "every_n_turns": 1}, db=db
+    )
+    var.set("profile-A")
+    t.on_session_end(session_id="s1", completed=True)
+    assert wrapped == [True]  # 优先走宿主 wrapper
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert seen == ["profile-A"]  # Context 经宿主 wrapper 传播进 worker
+
+
+def test_worker_context_fallback_stdlib(monkeypatch, recording_threads):
+    real_import = __import__
+
+    def no_tools(name, *args, **kwargs):
+        if name == "tools" or name.startswith("tools."):
+            raise ImportError(f"no host tools in test env: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", no_tools)
+
+    var = contextvars.ContextVar("autotitler_fallback_var", default="unset")
+    seen = []
+
+    class ContextLlm:
+        def complete(self, **kw):
+            seen.append(var.get())
+            return SimpleNamespace(text=_dec("keep"))
+
+    db = FakeDB(messages=MSGS, title=None)
+    t = AutoTitler(
+        SimpleNamespace(llm=ContextLlm()), {**DEFAULTS, "every_n_turns": 1}, db=db
+    )
+    var.set("profile-B")
+    t.on_session_end(session_id="s1", completed=True)
+    assert len(recording_threads.instances) == 1
+    run_recorded(recording_threads)
+    assert seen == ["profile-B"]  # 标准库 contextvars 兜底同样传播 Context
+
+
+@pytest.mark.parametrize("fail_in", ["init", "start"])
+def test_worker_thread_failure_clears_inflight(monkeypatch, fail_in):
+    RecordingThread.instances = []  # 本测试不用 fixture，手动清零全局实例表
+
+    class BoomThread:
+        def __init__(self, *args, **kwargs):
+            if fail_in == "init":
+                raise RuntimeError("cannot construct thread")
+
+        def start(self):
+            raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr("hermes_auto_titler.titler.threading.Thread", BoomThread)
+    db = FakeDB(messages=MSGS, title=None)
+    t, ctx = make_titler(db, text=_dec("keep"), cfg={"every_n_turns": 1})
+    t.on_session_end(session_id="s1", completed=True)  # hook 不抛异常
+    assert "s1" not in t._inflight  # 失败后 in-flight 标记已清理，可重试
+    assert ctx.llm.calls == []
+    # 线程恢复后再次提交成功
+    monkeypatch.setattr("hermes_auto_titler.titler.threading.Thread", RecordingThread)
+    t.on_session_end(session_id="s1", completed=True)  # n=2
+    assert len(RecordingThread.instances) == 1
+
+
+def test_get_db_singleton_under_concurrent_first_access(monkeypatch):
+    import hermes_auto_titler.titler as titler_mod
+
+    class FakeSessionDB:
+        instances = 0
+
+        def __init__(self):
+            # 主动释放 GIL，确保没有 _db_lock 时多个首次访问会重叠构造；
+            # 避免测试仅因构造太快被线程调度偶然串行而假通过。
+            time.sleep(0.02)
+            FakeSessionDB.instances += 1
+
+    monkeypatch.setattr(titler_mod, "SessionDB", FakeSessionDB)
+    monkeypatch.setattr(titler_mod, "_dbs", {})
+    results = []
+
+    def worker():
+        results.append(titler_mod.get_db())
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert len({id(r) for r in results}) == 1  # 全部拿到同一个实例
+    assert FakeSessionDB.instances == 1  # 并发首次构造只建一个 DB
+
+
+def test_get_db_isolates_profiles_by_hermes_home(monkeypatch, tmp_path):
+    # 双 profile 隔离：HERMES_HOME 变化后 get_db 必须返回指向不同库的实例；
+    # 同一 profile 内重复调用复用同一句柄。发布门禁回归（模块级单例曾串库）。
+    import hermes_auto_titler.titler as titler_mod
+
+    class FakeSessionDB:
+        homes = []
+
+        def __init__(self):
+            import os
+            self.home = os.environ.get("HERMES_HOME", "default")
+            FakeSessionDB.homes.append(self.home)
+
+    monkeypatch.setattr(titler_mod, "SessionDB", FakeSessionDB)
+    monkeypatch.setattr(titler_mod, "_dbs", {})
+    profile_a = str(tmp_path / "profile-A")
+    profile_b = str(tmp_path / "profile-B")
+    monkeypatch.setenv("HERMES_HOME", profile_a)
+    db_a1 = titler_mod.get_db()
+    db_a2 = titler_mod.get_db()
+    monkeypatch.setenv("HERMES_HOME", profile_b)
+    db_b = titler_mod.get_db()
+    assert db_a1 is db_a2  # 同 profile 复用
+    assert db_a1 is not db_b  # 跨 profile 新建
+    assert db_b.home == profile_b  # B 用的是 B 的路径，不是 A 的
+
+
+# -- 写回竞态：每次 apply 前刷新来源 ------------------------------------------
+
+def test_user_title_lands_between_write_attempts_not_overwritten():
+    # 竞态：用户 /title 在第一次写尝试（唯一性冲突 ValueError）之后、
+    # 重试写之前落地。apply 每次尝试都刷新来源与保护，user 权威胜出。
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm", conflict_titles={"新标题"})
+
+    def flaky_source(sid):
+        # 首次写尝试失败（calls 里已有 set_session_title）后，来源翻转为 user
+        if any(c[0] == "set_session_title" for c in db.calls):
+            db.title = "用户手改"
+            db.source = "user"
+        return db.source
+
+    db.get_session_title_source = flaky_source
+
+    t, _ = make_titler(db, text=_dec("rename", "新标题"))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "skipped"
+    assert r["reason"] == "user title is authoritative (set during evaluation)"
+    assert db.title == "用户手改"  # 重试没有覆盖用户标题
+    assert db.source == "user"
+    assert not any(c[0] == "set_session_title" and c[1] == "新标题 (2)" for c in db.calls)
+
+
+# -- 标题规范化与截断边界 ------------------------------------------------------
+
+def test_clean_title_wrapped_quote_after_prefix():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, _ = make_titler(db, text=_dec("rename", 'Title: "Test 空转排查。"'))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "Test 空转排查"
+    assert db.title == "Test 空转排查"
+
+
+def test_clean_title_chinese_prefix_quoted():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, _ = make_titler(db, text=_dec("rename", '"标题：Foo。"'))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "Foo"
+    assert db.title == "Foo"
+
+
+def test_clean_title_nested_wrapped_quotes():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, _ = make_titler(db, text=_dec("rename", '「Title: "Foo"。」'))
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "Foo"
+
+
+def test_truncation_boundary_punctuation_stripped():
+    db = FakeDB(messages=MSGS, title=None)
+    # 18 字符 > 上限 16：截到 "abcdefghijklmno:" 后剥掉边界冒号
+    t, _ = make_titler(db, text=_dec("rename", "abcdefghijklmno:xyz"), cfg={"max_title_length": 16})
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "abcdefghijklmno"
+    assert len(r["title"]) <= 16
+
+
+def test_truncation_boundary_quote_stripped():
+    db = FakeDB(messages=MSGS, title=None)
+    t, _ = make_titler(db, text=_dec("rename", "abcdefghijklmno'xyz"), cfg={"max_title_length": 16})
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert r["title"] == "abcdefghijklmno"
+    assert not r["title"].endswith("'")
+
+
+# -- 命令准确性 -----------------------------------------------------------------
+
+def test_config_command_enabled_message_notes_restart(monkeypatch):
+    from hermes_auto_titler.commands import make_handler
+
+    saved = []
+    monkeypatch.setattr(
+        "hermes_auto_titler.config.save_config",
+        lambda cfg, path=None: saved.append(dict(cfg)),
+    )
+    db = FakeDB(messages=MSGS)
+    t, _ = make_titler(db)
+    h = make_handler(t)
+    out = h("config enabled 0")
+    assert t.cfg["enabled"] is False
+    assert "requires a Hermes restart" in out
+    out2 = h("config enabled 1")
+    assert t.cfg["enabled"] is True
+    assert "requires a Hermes restart" in out2
+
+
+# -- 评审协议：候选标题由下一次评估裁决（approve/rename/keep） --------------------
+
+def _review_titler(confirmations=1, per_hour=0):
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(
+        db,
+        text=_dec("rename", "新标题"),
+        cfg={"rename_confirmations": confirmations},
+    )
+    return db, t, ctx
+
+
+def test_first_candidate_is_pending_not_written():
+    # 首次 rename 成为待审候选：不写库
+    db, t, ctx = _review_titler()
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "pending"
+    assert r.get("candidate") == "新标题"
+    assert db.title == "旧标题"  # 未写
+    assert db.calls == []  # 无任何写库调用
+
+
+def test_second_eval_approve_confirms_rename():
+    # 下一次评估模型 approve 候选 → 落库
+    db, t, ctx = _review_titler()
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    ctx.llm.text = _dec("approve")
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "新标题"
+
+
+def test_second_eval_same_candidate_counts_as_endorsement():
+    # 模型看到 Proposed title 后原样重复 → 视为背书，落库
+    db, t, ctx = _review_titler()
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    ctx.llm.text = _dec("rename", "新标题")
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "新标题"
+
+
+def test_review_candidate_change_replaces_pending():
+    # 裁决时给出更好的新候选：替换 pending，旧候选作废
+    db, t, ctx = _review_titler()
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    ctx.llm.text = _dec("rename", "另一标题")
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "pending"
+    assert r.get("candidate") == "另一标题"
+    assert db.title == "旧标题"
+    ctx.llm.text = _dec("approve")
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "另一标题"
+
+
+def test_keep_clears_pending_candidate():
+    # 模型裁决 keep：放弃候选，回到当前标题
+    db, t, ctx = _review_titler()
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    ctx.llm.text = _dec("keep")
+    assert t.evaluate("s1", force=True)["action"] == "keep"
+    assert t._pending.get("s1") is None
+    # 之后重新提出候选 → approve 落库
+    ctx.llm.text = _dec("rename", "新标题")
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    ctx.llm.text = _dec("approve")
+    assert t.evaluate("s1", force=True)["action"] == "renamed"
+
+
+def test_approve_without_pending_is_keep():
+    # 无待审候选时的 approve 防御性视为 keep，不写库
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("approve"), cfg={"rename_confirmations": 1})
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "keep"
+    assert db.title == "旧标题"
+    assert db.calls == []
+
+
+def test_approve_writes_pending_candidate_not_echoed_title():
+    # approve 背书的是候选本身：忽略模型回显的 title 字段
+    db, t, ctx = _review_titler()
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    ctx.llm.text = '{"action":"approve","title":"别的标题"}'
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "新标题"
+
+
+def test_current_title_equal_to_candidate_still_keep():
+    # 候选与当前标题相同 = keep，且应清掉 stale pending
+    db = FakeDB(messages=MSGS, title="新标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("rename", "新标题"),
+                         cfg={"rename_confirmations": 1})
+    t._pending["s1"] = {"title": "新标题"}
+    assert t.evaluate("s1", force=True)["action"] == "keep"
+    assert t._pending.get("s1") is None
+
+
+def test_confirmations_0_keeps_single_shot_behavior():
+    # 默认配置（0）：单次评估直接改名，评审协议关闭
+    db, t, ctx = _review_titler(confirmations=0)
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "新标题"
+
+
+def test_derived_upgrade_bypasses_confirmation():
+    # derived/无标题的首次升级是补漏不是折腾：旁路评审立即写
+    db = FakeDB(messages=MSGS, title="旧兜底", source="derived")
+    t, ctx = make_titler(db, text=_dec("rename", "正式标题"),
+                         cfg={"rename_confirmations": 2})
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "renamed"
+    assert db.title == "正式标题"
+
+    db2 = FakeDB(messages=MSGS, title=None, source=None)
+    t2, ctx2 = make_titler(db2, text=_dec("rename", "首个标题"),
+                           cfg={"rename_confirmations": 2})
+    r2 = t2.evaluate("s2", force=True)
+    assert r2["action"] == "renamed"
+    assert db2.title == "首个标题"
+
+
+def test_close_eval_bypasses_confirmation():
+    # blind 终局评估（retitle-all）直接提交：全貌已知，不再评审
+    db, t, ctx = _review_titler()
+    r = t.evaluate("s1", force=True, blind=True)
+    assert r["action"] == "renamed"
+    assert db.title == "新标题"
+
+
+def test_blind_review_ignores_pending_and_writes_directly():
+    # blind 评估忽略进程内待审候选，直接落库并清空
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db, text=_dec("rename", "盲改标题"),
+                         cfg={"rename_confirmations": 1})
+    t._pending["s1"] = {"title": "待审候选"}
+    r = t.evaluate("s1", force=True, blind=True)
+    assert r["action"] == "renamed"
+    assert db.title == "盲改标题"
+    assert t._pending.get("s1") is None
+
+
+def test_review_prompt_shows_proposed_title_and_approve_contract():
+    # 有待审候选的评估：user prompt 展示 Proposed title，system 契约含 approve；
+    # 无候选的首轮评估不出现 approve
+    db, t, ctx = _review_titler()
+    t.evaluate("s1", force=True)
+    first_system = ctx.llm.calls[0]["messages"][0]["content"]
+    assert "approve" not in first_system
+    t.evaluate("s1", force=True)
+    second_system = ctx.llm.calls[1]["messages"][0]["content"]
+    second_user = ctx.llm.calls[1]["messages"][1]["content"]
+    assert "候选标题：" in second_user
+    assert "新标题" in second_user
+    assert "approve" in second_system
+
+
+def test_user_race_during_confirmation_clears_pending():
+    # 评审期间用户 /title 抢先：放弃 pending，用户权威胜出
+    db, t, ctx = _review_titler()
+    assert t.evaluate("s1", force=True)["action"] == "pending"
+    db.title, db.source = "用户手改", "user"
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "skipped"
+    assert r["reason"] == "user title is authoritative"
+    assert t._pending.get("s1") is None
+
+
+def test_on_pre_llm_call_triggers_eager_evaluation_for_new_session(recording_threads):
+    db = FakeDB(messages=MSGS, title=None, source=None)
+    t, ctx = make_titler(db)  # 默认即 plugin 接管
+    t.on_pre_llm_call(session_id="s1")
+    assert len(recording_threads.instances) == 1
+
+
+def test_on_pre_llm_call_ignores_internal_and_user_titled(recording_threads):
+    db = FakeDB(messages=MSGS, title="用户标题", source="user")
+    t, ctx = make_titler(db)
+    t.on_pre_llm_call(session_id="s1")
+    assert len(recording_threads.instances) == 0
+
+    t.on_pre_llm_call(session_id="s1", platform="cron")
+    assert len(recording_threads.instances) == 0
+
+
+# -- 提示词防漂移规范 ------------------------------------------------------------
+
+def test_prompt_contains_stability_rules_on_normal_eval():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db)
+    t.evaluate("s1", force=True)
+    system = ctx.llm.calls[0]["messages"][0]["content"]
+    assert '{"action":"keep"}' in system
+    assert '{"action":"rename","title":"<short title>"}' in system
+    assert "durable subject" in system
+    assert "Return JSON only" in system
+    assert '"keep"|"rename"' not in system
+
+    db2 = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t2, ctx2 = make_titler(db2)
+    t2.evaluate("s1", force=True, blind=True)
+    blind_system = ctx2.llm.calls[0]["messages"][0]["content"]
+    assert "Return exactly this JSON shape:" in blind_system
+    assert '{"action":"rename","title":"<short title>"}' in blind_system
+    assert "Generate a replacement title" in blind_system
+
+
+def test_prompt_conservative_rule_prefers_keep_when_uncertain():
+    db = FakeDB(messages=MSGS, title="旧标题", source="llm")
+    t, ctx = make_titler(db)
+    t.evaluate("s1", force=True)
+    system = ctx.llm.calls[0]["messages"][0]["content"]
+    assert "clear, durable mismatch" in system
+    assert "wording-only improvement is insufficient" in system
+
+
+# -- 评审协议解析与契约 ------------------------------------------------------------
+
+def test_parse_decision_accepts_approve():
+    from hermes_auto_titler.titler import _parse_decision
+
+    assert _parse_decision('{"action":"approve"}') == ("approve", None)
+    assert _parse_decision('{"action":"approve","title":"X"}') == ("approve", "X")
+
+
+def test_prepare_candidate_preserves_mixed_script_when_length_limit_is_none():
+    from hermes_auto_titler.titler import AutoTitler
+    titler = AutoTitler(None, {"max_title_length": None, "max_display_width": 40})
+    cand = titler._prepare_candidate("hermes-auto-titler 会话主题归纳")
+    assert cand == "hermes-auto-titler 会话主题归纳"
+
+
+def test_prepare_candidate_still_honors_explicit_max_title_length():
+    from hermes_auto_titler.titler import AutoTitler
+    titler = AutoTitler(None, {"max_title_length": 20, "max_display_width": 40})
+    cand = titler._prepare_candidate("hermes-auto-titler 会话主题归纳")
+    assert cand is not None
+    assert len(cand) <= 20
+
+
+def test_base_autotitler_generate_raises_not_implemented():
+    import pytest
+    from hermes_auto_titler.policy import _BaseAutoTitler
+    base = _BaseAutoTitler(None, {})
+    with pytest.raises(NotImplementedError, match="policy.AutoTitler"):
+        base._generate(None, [], [], [])
+
+
+def test_retry_backoff_cooldown_not_suppressed_by_last_eval(monkeypatch):
+    """Parallax Review [BLOCKER #1]: 真实失败后退避到期应真正发出调用，不被 _last_eval 节流阻断。"""
+    db = FakeDB(messages=MSGS, title=None)
+    attempts = []
+
+    class FlakyLlm:
+        def complete(self, **kw):
+            attempts.append(time.time())
+            if len(attempts) == 1:
+                raise RuntimeError("503 overloaded")
+            return SimpleNamespace(text='{"action":"rename","title":"重试成功标题"}', usage={})
+
+    t = AutoTitler(SimpleNamespace(llm=FlakyLlm()), {**DEFAULTS, "every_n_turns": 2}, db=db)
+    # 第 1 轮：真实调用失败
+    r1 = t.evaluate("s1", force=True)
+    assert r1["action"] == "failed"
+    assert "s1" in t._failed_sessions
+    # 关键断言：失败后 _last_eval 不应记录 s1，避免被 5 分钟常规节流锁死
+    assert "s1" not in t._last_eval
+
+    # 模拟 30 秒后退避到期，捎带检查触发补偿重试
+    t._failed_sessions["s1"]["next_retry_at"] = time.monotonic() - 1
+    t._retry_failed_sessions()
+    time.sleep(0.05)
+
+    assert "s1" not in t._failed_sessions
+    assert db.title == "重试成功标题"
+    assert len(attempts) == 2
+
+
+def test_finalize_waits_at_most_100ms_for_inflight_worker(tmp_path):
+    """Network wait is 100ms; total close path stays far below the 10s host budget."""
+    import threading
+
+    db = FakeDB(messages=MSGS, title="旧标题", source="derived")
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockedLlm:
+        def complete(self, **kw):
+            entered.set()
+            release.wait(timeout=5)
+            return SimpleNamespace(text='{"action":"rename","title":"终局成功标题"}', usage={})
+
+    t = AutoTitler(SimpleNamespace(llm=BlockedLlm()), {**DEFAULTS, "every_n_turns": 1}, db=db)
+    t._state_path = tmp_path / "state.json"
+    t.on_session_end(session_id="s1", completed=True)
+    assert entered.wait(timeout=5)
+
+    started = time.monotonic()
+    t.on_session_finalize(session_id="s1")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert db.title == "旧标题"
+    assert t._finalize_intents["s1"]["reason"] == "finalize budget exceeded"
+    release.set()
+    _wait_inflight_clear(t, "s1")
+    assert db.title == "终局成功标题"
+
+
+
+
+def test_retry_failed_sessions_drops_user_title():
+    db = FakeDB(messages=MSGS, title="用户手动标题", source="user")
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    t._failed_sessions["s1"] = {"attempts": 1, "next_retry_at": time.monotonic() - 10}
+
+    t.on_session_end(session_id="s2", completed=True)
+    assert "s1" not in t._failed_sessions
+
+
+def test_policy_prompt_soft_length_honors_explicit_max_title_length():
+    from types import SimpleNamespace
+    from hermes_auto_titler.policy import AutoTitler
+
+    calls = []
+    fake_llm = SimpleNamespace(complete=lambda **kw: calls.append(kw) or SimpleNamespace(text='{"action":"keep"}', usage={}))
+    t = AutoTitler(SimpleNamespace(llm=fake_llm), {**DEFAULTS, "max_title_length": 18})
+    t._generate("当前", [("user", "hi")], [], [("user", "hi")])
+    system = calls[0]["messages"][0]["content"]
+    assert "up to about 18 characters" in system
+
+
+def test_retry_candidate_selection_skips_inflight_preventing_starvation():
+    """Codex P1 回归：如果由于在途执行导致占用背压名额，不应阻塞后续候选。"""
+    db = FakeDB(messages=MSGS, title="旧标题", source="derived")
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    import threading
+    # s1 已经在后台执行中
+    with t._inflight_lock:
+        t._inflight["s1"] = threading.Event()
+    t._failed_sessions["s1"] = {"attempts": 1, "next_retry_at": time.monotonic() - 10}
+    t._failed_sessions["s2"] = {"attempts": 1, "next_retry_at": time.monotonic() - 10}
+    t._failed_sessions["s3"] = {"attempts": 1, "next_retry_at": time.monotonic() - 10}
+
+    # 触发重试时，s1 在 inflight 中应该被直接跳过，s2 和 s3 必须被正常调度
+    submitted = []
+    t._submit_eval = lambda sid: submitted.append(sid)
+    t._retry_failed_sessions()
+    assert "s1" not in submitted
+    assert "s2" in submitted
+    assert "s3" in submitted
+
+
+def test_evaluate_evicts_failed_session_on_non_model_skips():
+    """Codex P1 回归：非模型早退（如 no messages、legacy title）必须出队，防止死循环无限重试。"""
+    db = FakeDB(messages=[], title=None, source=None)
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    t._failed_sessions["s_empty"] = {"attempts": 1, "next_retry_at": time.monotonic() - 10}
+    res = t.evaluate("s_empty", force=True)
+    assert res["action"] == "skipped"
+    assert res["reason"] == "no messages"
+    assert "s_empty" not in t._failed_sessions
+
+
+def test_capacity_failure_is_not_dropped_after_five_attempts():
+    db = FakeDB(messages=MSGS, title=None)
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    t._failed_sessions["s1"] = {
+        "attempts": 5,
+        "next_retry_at": time.monotonic() - 1,
+        "capacity": True,
+    }
+    submitted = []
+    t._submit_eval = lambda sid: submitted.append(sid)
+    t._retry_failed_sessions()
+    assert submitted == ["s1"]
+    assert "s1" in t._failed_sessions
+
+
+def test_non_capacity_failure_expires_after_five_attempts():
+    db = FakeDB(messages=MSGS, title=None)
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    t._failed_sessions["s1"] = {
+        "attempts": 5,
+        "next_retry_at": time.monotonic() - 1,
+        "capacity": False,
+    }
+    submitted = []
+    t._submit_eval = lambda sid: submitted.append(sid)
+    t._retry_failed_sessions()
+    assert submitted == []
+    assert "s1" not in t._failed_sessions
+
+
+def test_overloaded_model_error_is_queued_as_capacity():
+    db = FakeDB(messages=MSGS, title=None)
+
+    class BoomLlm:
+        def complete(self, **kw):
+            raise RuntimeError("Error code: 503 - No available targets for combo: Mercury")
+
+    t = AutoTitler(SimpleNamespace(llm=BoomLlm()), {**DEFAULTS}, db=db)
+    r = t.evaluate("s1", force=True)
+    assert r["action"] == "failed"
+    assert t._failed_sessions["s1"]["capacity"] is True
+
+
+def test_requeue_untitled_sessions_from_db_survives_restart():
+    db = FakeDB(messages=MSGS, title=None, source=None, sessions=[
+        {"id": "untitled", "title": ""},
+        {"id": "named", "title": "已有标题"},
+        {"id": "manual", "title": "手改"},
+    ])
+    titles = {"untitled": None, "named": "已有标题", "manual": "手改"}
+    sources = {"untitled": None, "named": "llm", "manual": "user"}
+    db.get_session_title = lambda sid: titles[sid]
+    db.get_session_title_source = lambda sid: sources[sid]
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    t._requeue_untitled_sessions()
+    assert "untitled" in t._failed_sessions
+    assert "named" not in t._failed_sessions
+    assert "manual" not in t._failed_sessions
+
+
+def test_production_default_review_protocol_e2e():
+    """在生产默认配置 rename_confirmations=1 下，验证完整的两轮审核闭环：
+    第一轮进入 pending，第二轮确认后落库并更新标题。
+    """
+    messages = [
+        {"role": "user", "content": "帮我开发一个新的自动标题插件"},
+        {"role": "assistant", "content": "好的，我们开始设计 hermes-auto-titler 架构。"},
+    ]
+    db = FakeDB(messages=messages, title="旧初始标题", source="llm")
+    llm = FakeLlm('{"action":"rename","title":"hermes-auto-titler 架构设计"}')
+    # 显式使用生产默认配置（rename_confirmations=1）
+    t = AutoTitler(SimpleNamespace(llm=llm), {**DEFAULTS, "rename_confirmations": 1}, db=db)
+
+    # 第一轮：提出重命名候选，返回 pending，标题不落库
+    res1 = t.evaluate("s1", force=True)
+    assert res1["action"] == "pending"
+    assert res1["candidate"] == "hermes-auto-titler 架构设计"
+    assert db.get_session_title("s1") == "旧初始标题"
+
+    # 第二轮：模型背书确认该候选（approve 或再次提出相同候选），标题正式写入数据库
+    llm_approve = FakeLlm('{"action":"approve"}')
+    t.ctx.llm = llm_approve
+    res2 = t.evaluate("s1", force=True)
+    assert res2["action"] == "renamed"
+    assert res2["title"] == "hermes-auto-titler 架构设计"
+    assert db.get_session_title("s1") == "hermes-auto-titler 架构设计"
+
+
+def test_untitled_session_forces_rename_never_keeps():
+    """未命名会话必须强制 rename-only，绝不允许因为模型返回 keep 导致永久无标题。"""
+    db = FakeDB(messages=[{"role": "user", "content": "帮我写个脚本"}], title=None)
+    # 模型试图返回 keep
+    t = AutoTitler(SimpleNamespace(llm=FakeLlm('{"action":"keep"}')), {**DEFAULTS}, db=db)
+    # 模拟 evaluate 时传给 _generate 的 force_rename 必须为 True
+    res = t.evaluate("s1", force=True)
+    # 在 rename-only 契约下，模型返回 keep 会被判定为未能产生有效标题的 failed
+    assert res["action"] == "failed"
+    assert res["action"] != "keep"
+
+
+def test_pre_llm_call_fallback_snapshot_on_db_race():
+    """当 Hermes 触发 pre_llm_call 但数据库尚未持久化首条消息时，使用快照生成标题。"""
+    # 数据库此时是空的（模拟落盘慢于 hook 触发）
+    db = FakeDB(messages=[], title=None)
+    llm = FakeLlm('{"action":"rename","title":"首轮快照标题"}')
+    t = AutoTitler(SimpleNamespace(llm=llm), {**DEFAULTS, "first_title_mode": "plugin"}, db=db)
+
+    # 注入首轮快照（模拟 on_pre_llm_call 捕获的用户提问）
+    t._pre_llm_snapshots["s_race"] = "这是首条用户提问"
+
+    # 评估时虽然 DB 为空，但快照生效
+    res = t.evaluate("s_race", force=True)
+    assert res["action"] == "renamed"
+    assert res["title"] == "首轮快照标题"
+
+
+def test_stale_last_generate_error_cleared_on_next_run():
+    """上一次的 503 报错不残留污染下一次的 JSON 格式错误。"""
+    from hermes_auto_titler.policy import AutoTitler as PolicyAutoTitler
+
+    class ErrorLlm:
+        def complete(self, messages, **kwargs):
+            raise RuntimeError("503 Service Unavailable")
+
+    db = FakeDB(messages=[{"role": "user", "content": "test"}], title="旧标题", source="llm")
+    t = PolicyAutoTitler(SimpleNamespace(llm=ErrorLlm()), {**DEFAULTS}, db=db)
+
+    # 第一次：503 异常
+    t.evaluate("s1", force=True)
+    assert "503" in t._last_generate_error
+
+    # 第二次：正常调用但返回非法 JSON
+    t.ctx.llm = FakeLlm("not a valid json")
+    t.evaluate("s1", force=True)
+    # 错误被清空，不再是 503
+    assert "503" not in t._last_generate_error
+
+
+def test_disabled_titler_stops_retry_and_eval():
+    """enabled: false 时，后台重试循环与常规评估完全停止。"""
+    db = FakeDB(messages=[{"role": "user", "content": "test"}], title="旧标题")
+    llm = FakeLlm('{"action":"rename","title":"新标题"}')
+    t = AutoTitler(SimpleNamespace(llm=llm), {**DEFAULTS, "enabled": False}, db=db)
+    t._failed_sessions["s1"] = {"attempts": 0, "next_retry_at": 0}
+
+    # 重试轮询直接返回，不调用 LLM
+    t._retry_failed_sessions()
+    assert len(llm.calls) == 0
+
+    # evaluate 返回 disabled
+    res = t.evaluate("s1", force=False)
+    assert res["action"] == "disabled"
+    assert len(llm.calls) == 0
+
+
+def test_first_turn_end_overrides_eager_pre_title(recording_threads):
+    """首轮 pre_llm_call 生成草稿后，第一回合 end 绝不被防抖，直接全量覆盖落库。"""
+    db = FakeDB(
+        messages=[
+            {"role": "user", "content": "帮我写一个网页"},
+            {"role": "assistant", "content": "好，这是完整的网页代码"},
+        ],
+        title=None,
+        source=None,
+    )
+    class SequenceLlm:
+        def __init__(self):
+            self.calls = []
+        def complete(self, messages, **kwargs):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return SimpleNamespace(text='{"action":"rename","title":"草稿标题"}')
+            return SimpleNamespace(text='{"action":"rename","title":"正式网页开发"}')
+
+    seq_llm = SequenceLlm()
+    cfg = {
+        **DEFAULTS,
+        "every_n_turns": 3,         # 正常情况下第 1 轮不满足每 3 轮门禁
+        "min_interval_minutes": 5,   # 正常情况下 5 分钟内会被 throttle
+        "rename_confirmations": 2,   # 正常情况下 llm->llm 需要 2 轮确认进入 pending
+    }
+    t = AutoTitler(SimpleNamespace(llm=seq_llm), cfg, db=db)
+
+    # 1. 触发 pre_llm_call
+    t.on_pre_llm_call(session_id="s1", user_message="帮我写一个网页")
+    run_recorded(recording_threads)
+
+    # 验证 pre 已生成草稿标题并落库为 llm
+    assert db.title == "草稿标题"
+    assert db.source == "llm"
+    assert "s1" in t._eager_pre_sessions
+    assert len(seq_llm.calls) == 1
+
+    # 2. 触发第一回合 on_session_end
+    t.on_session_end(session_id="s1", completed=True)
+    run_recorded(recording_threads)
+
+    # 验证：第一回合 end 未被 every_n_turns=3 阻挡，未被 min_interval 冷却防抖，未进 pending，直接覆盖！
+    assert db.title == "正式网页开发"
+    assert db.source == "llm"
+    assert "s1" not in t._eager_pre_sessions
+    assert len(seq_llm.calls) == 2
+
+    # 3. 验证第二回合恢复正常防抖门禁
+    t.on_session_end(session_id="s1", completed=True)  # n=2, 2 % 3 != 0, 且不在 _eager_pre_sessions
+    # 不触发任何新提交
+    assert len(recording_threads.instances) == 2
+
+
+def test_first_turn_end_override_respects_user_title(recording_threads):
+    """若用户在首轮内手动命名，第一回合 end 绝不覆盖用户标题。"""
+    db = FakeDB(
+        messages=[{"role": "user", "content": "hello"}],
+        title=None,
+        source=None,
+    )
+    llm = FakeLlm('{"action":"rename","title":"草稿标题"}')
+    t = AutoTitler(SimpleNamespace(llm=llm), {**DEFAULTS, "every_n_turns": 3}, db=db)
+
+    t.on_pre_llm_call(session_id="s1", user_message="hello")
+    run_recorded(recording_threads)
+    assert db.title == "草稿标题"
+
+    # 用户手动改名
+    db.title = "用户权威标题"
+    db.source = "user"
+
+    # 第一回合 end
+    t.on_session_end(session_id="s1", completed=True)
+    run_recorded(recording_threads)
+
+    assert db.title == "用户权威标题"
+    assert db.source == "user"
+    assert "s1" not in t._eager_pre_sessions
+
+
+def test_first_turn_end_override_keeps_when_candidate_identical(recording_threads):
+    """若首回合 end 模型评估生成的新标题与 pre 标题一致，判定 keep 并正常清除覆写标记。"""
+    db = FakeDB(
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ],
+        title=None,
+        source=None,
+    )
+    llm = FakeLlm('{"action":"rename","title":"一致标题"}')
+    t = AutoTitler(SimpleNamespace(llm=llm), {**DEFAULTS, "every_n_turns": 3}, db=db)
+
+    t.on_pre_llm_call(session_id="s1", user_message="hello")
+    run_recorded(recording_threads)
+    assert db.title == "一致标题"
+
+    t.on_session_end(session_id="s1", completed=True)
+    run_recorded(recording_threads)
+
+    assert db.title == "一致标题"
+    assert "s1" not in t._eager_pre_sessions
+
+
+def test_first_turn_end_override_when_pre_still_inflight(recording_threads):
+    """当 pre_llm_call 评估还在后台执行中时，第一回合 end 到达标记 dirty，接力第二趟强制覆盖，生产默认 rename_confirmations=1 下直接落库不进 pending。"""
+    db = FakeDB(
+        messages=[
+            {"role": "user", "content": "帮我写一个网页"},
+            {"role": "assistant", "content": "好，这是完整的网页代码"},
+        ],
+        title=None,
+        source=None,
+    )
+    class SequenceLlm:
+        def __init__(self):
+            self.calls = []
+        def complete(self, messages, **kwargs):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return SimpleNamespace(text='{"action":"rename","title":"草稿标题"}')
+            return SimpleNamespace(text='{"action":"rename","title":"正式终稿标题"}')
+
+    seq_llm = SequenceLlm()
+    cfg = {
+        **DEFAULTS,
+        "every_n_turns": 3,
+        "min_interval_minutes": 5,
+        "rename_confirmations": 1,  # 显式使用生产默认确认数
+    }
+    t = AutoTitler(SimpleNamespace(llm=seq_llm), cfg, db=db)
+
+    # 1. pre_llm_call 触发，生成 Worker
+    t.on_pre_llm_call(session_id="s1", user_message="帮我写一个网页")
+    assert "s1" in t._inflight
+
+    # 2. 在 Worker 尚未 run_recorded（仍在 in-flight）期间，第一回合 end 到达
+    t.on_session_end(session_id="s1", completed=True)
+    # 因为 in-flight，s1 被加入 _dirty_sessions，并且 dirty override intent 登记
+    assert "s1" in t._dirty_sessions
+    assert "s1" in t._dirty_override_intents
+
+    # 3. Worker 执行，完成第一趟 pre 写入草稿后，第二趟以 override 身份执行
+    run_recorded(recording_threads)
+
+    # 验证：正式标题直接覆盖落库，绝不卡入 pending
+    assert db.title == "正式终稿标题"
+    assert db.source == "llm"
+    assert "s1" not in t._eager_pre_sessions
+    assert "s1" not in t._dirty_override_intents
+    assert t._pending.get("s1") is None
+    assert len(seq_llm.calls) == 2
+
+
+def test_first_turn_end_error_clears_override_and_respects_retry_backoff(recording_threads):
+    """首轮 end 若遇到模型报错，清除 override 标记进入失败账本，后续轮次绝不绕过退避狂刷模型。"""
+    db = FakeDB(
+        messages=[
+            {"role": "user", "content": "帮我写一个网页"},
+            {"role": "assistant", "content": "好，这是代码"},
+        ],
+        title=None,
+        source=None,
+    )
+    class FailOnSecondLlm:
+        def __init__(self):
+            self.calls = []
+        def complete(self, messages, **kwargs):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return SimpleNamespace(text='{"action":"rename","title":"草稿标题"}')
+            raise RuntimeError("503 Service Unavailable")
+
+    fail_llm = FailOnSecondLlm()
+    cfg = {**DEFAULTS, "every_n_turns": 3, "min_interval_minutes": 5}
+    t = AutoTitler(SimpleNamespace(llm=fail_llm), cfg, db=db)
+
+    # 1. pre_llm_call 成功生成草稿
+    t.on_pre_llm_call(session_id="s1", user_message="帮我写一个网页")
+    run_recorded(recording_threads)
+    assert db.title == "草稿标题"
+    assert len(fail_llm.calls) == 1
+
+    # 2. 第一轮 end 执行遇到 503 报错
+    t.on_session_end(session_id="s1", completed=True)
+    run_recorded(recording_threads)
+    assert len(fail_llm.calls) == 2
+    assert "s1" in t._failed_sessions
+    assert t._failed_sessions["s1"]["attempts"] == 1
+    assert "s1" not in t._eager_pre_sessions
+    assert "s1" not in t._dirty_override_intents
+
+    # 3. 第二轮、第三轮 end：因为 override 标记已被清除，且退避时间未到、未达 every_n_turns，绝不提交调用
+    t.on_session_end(session_id="s1", completed=True)  # n=2
+    assert len(recording_threads.instances) == 2
+    assert len(fail_llm.calls) == 2
+
+
+def test_on_pre_llm_call_does_not_arm_override_when_not_first_turn(recording_threads):
+    """当 payload 明确指示 is_first_turn=False 时，即使无标题也不得武装首轮覆盖标记。"""
+    db = FakeDB(messages=MSGS, title=None, source=None)
+    t, ctx = make_titler(db)
+
+    t.on_pre_llm_call(session_id="s1", is_first_turn=False)
+    # 不得进入 _eager_pre_sessions
+    assert "s1" not in t._eager_pre_sessions

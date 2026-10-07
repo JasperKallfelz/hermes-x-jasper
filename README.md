@@ -1,4 +1,22 @@
-# Hermes CLI Starter `alpha`
+# Hermes x Jasper — server snapshot and CLI starter `alpha`
+
+**Updated server package: 2026-10-06.** The reusable server code is now available in [`server/`](server/README.md): pinned Hermes 0.21.1, runtime fixes, LCM, the full Second Brain source, Context Inbox, Process Observatory, selected operational skills and voice helpers. Accounts, credentials, private memory and server state are excluded.
+
+For a new installation:
+
+```bash
+git clone https://github.com/JasperKallfelz/hermes-x-jasper.git
+cd hermes-x-jasper
+PYTHON=python3.11 ./setup-server.sh --with-lcm
+~/hermes-server/bin/hermes setup
+~/hermes-server/bin/hermes
+```
+
+The new installer uses a fresh isolated directory and your own provider login. See the [server installation guide](server/README.md) for requirements, optional modules, verification and explicit exclusions. Start with `--dry-run` to inspect the plan.
+
+The documentation below describes the **legacy July CLI starter** (`setup.sh`). Its pinned revision and small companion modules are preserved for existing installations; new users should follow the server guide above.
+
+## Legacy CLI starter
 
 > [!WARNING]
 > **Alpha.** This starter is under active development and not yet stable. Interfaces, the feature patch, and the config layout may change without notice. Expect rough edges — pin what you depend on.

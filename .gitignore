@@ -9,6 +9,17 @@
 *_ed25519
 credentials.json
 token.json
+auth.json
+state.json
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+*.session
+manifest.json
 
 # --- local Hermes config and state -------------------------------------------
 # The live config belongs in $HERMES_HOME, never in the repo. If someone copies
@@ -80,6 +91,7 @@ trajectories/
 
 # --- editors / OS ------------------------------------------------------------
 .DS_Store
+._*
 Thumbs.db
 .idea/
 .vscode/

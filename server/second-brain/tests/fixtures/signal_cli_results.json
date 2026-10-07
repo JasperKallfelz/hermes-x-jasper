@@ -1,0 +1,65 @@
+{
+  "all_success": {
+    "timestamp": 1712345678000,
+    "results": [
+      {
+        "recipientAddress": {
+          "uuid": "aaaaaaaa-0000-4000-8000-000000000001",
+          "number": "+15551234567"
+        },
+        "type": "SUCCESS"
+      },
+      {
+        "recipientAddress": {
+          "uuid": "aaaaaaaa-0000-4000-8000-000000000002",
+          "number": "+15557654321"
+        },
+        "success": true
+      }
+    ]
+  },
+  "single_total_failure": {
+    "timestamp": 1712345678001,
+    "results": [
+      {
+        "recipientAddress": {
+          "uuid": "bbbbbbbb-0000-4000-8000-000000000001",
+          "number": "+15550000001"
+        },
+        "type": "UNREGISTERED_FAILURE",
+        "error": "fixture-private-recipient-error"
+      }
+    ]
+  },
+  "mixed_partial_failure": {
+    "timestamp": 1712345678002,
+    "results": [
+      {
+        "recipientAddress": {
+          "uuid": "cccccccc-0000-4000-8000-000000000001",
+          "number": "+15550000002"
+        },
+        "type": "SUCCESS"
+      },
+      {
+        "recipientAddress": {
+          "uuid": "cccccccc-0000-4000-8000-000000000002",
+          "number": "+15550000003"
+        },
+        "success": false,
+        "failure": "fixture-private-partial-failure"
+      }
+    ]
+  },
+  "malformed_results": {
+    "timestamp": 1712345678003,
+    "results": [
+      {
+        "recipientAddress": {
+          "uuid": "dddddddd-0000-4000-8000-000000000001",
+          "number": "+15550000004"
+        }
+      }
+    ]
+  }
+}

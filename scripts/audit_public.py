@@ -294,6 +294,22 @@ def _is_historical_self_test_fixture(path: Path, line: str, rule: str) -> bool:
     return False
 
 
+# Reviewed immutable historical findings: public GitHub noreply attribution,
+# container HOME paths, and Python decorators mistaken for email addresses.
+# Blob + path + line + rule are all required. New content is never exempted.
+REVIEWED_HISTORY_FINDINGS = {
+    ("af9875432293b2a400ad7203c861d3e80a04a072", "CONTRIBUTING.md", 92, "email"),
+    ("e39ee7ba8b79ea65a7ddeb4d73192920f40d6552", "docs/RELEASING.md", 14, "email"),
+    ("2a86614761447db6b118bfefb04743e982435849", "modules/pi-runtime/hermes-pi.patch", 5365, "linux-home"),
+    ("2a86614761447db6b118bfefb04743e982435849", "modules/pi-runtime/hermes-pi.patch", 5370, "linux-home"),
+    ("2a86614761447db6b118bfefb04743e982435849", "modules/pi-runtime/hermes-pi.patch", 5595, "linux-home"),
+    ("2a86614761447db6b118bfefb04743e982435849", "modules/pi-runtime/hermes-pi.patch", 5598, "linux-home"),
+    ("2a86614761447db6b118bfefb04743e982435849", "modules/pi-runtime/hermes-pi.patch", 14510, "email"),
+    ("2386648aed8042f13d75652d162a0f662a21ad57", "scripts/audit_public.py", 45, "email"),
+    ("2386648aed8042f13d75652d162a0f662a21ad57", "scripts/audit_public.py", 111, "email"),
+}
+
+
 def scan_history(root: Path, denylist: Iterable[str]) -> int:
     """Scan reachable git blobs without printing matched values."""
     if not _is_git_worktree(root):
@@ -325,6 +341,8 @@ def scan_history(root: Path, denylist: Iterable[str]) -> int:
         blob_path = Path(name)
         blob_lines = cat.stdout.splitlines()
         for lineno, rule, message in scan_text(cat.stdout, denylist):
+            if (blob, name, lineno, rule) in REVIEWED_HISTORY_FINDINGS:
+                continue
             source_line = blob_lines[lineno - 1].rstrip()
             if source_line in current_allowances.get(name, set()):
                 continue

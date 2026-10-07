@@ -68,3 +68,26 @@ jobs:
           git clone --quiet https://github.com/NousResearch/hermes-agent /tmp/hermes
           git -C /tmp/hermes checkout --quiet --detach "$PINNED"
           git -C /tmp/hermes apply --check --whitespace=error-all -v "$GITHUB_WORKSPACE/patches/voice-and-desktop-features.patch"
+
+  server-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Dependencies
+        run: |
+          python -m pip install pytest pyyaml cryptography
+          sudo apt-get update -qq
+          sudo apt-get install -y zsh
+      - name: Integrity and installer boundary tests
+        run: |
+          python scripts/verify_server_snapshot.py
+          python -m pytest tests/test_server_snapshot.py -q
+          bash -n setup-server.sh
+      - name: Second Brain portable regression suite
+        working-directory: server/second-brain
+        run: PYTHONPATH=src python -m unittest discover -s tests -q
+      - name: Prepare the actual pinned runtime from public upstream
+        run: ./setup-server.sh --source-only --with-lcm --with-context-inbox --with-observatory --root /tmp/hermes-server-ci
