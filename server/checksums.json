@@ -884,7 +884,7 @@
     "path": "second-brain/tests/test_graph.py"
   },
   {
-    "sha256": "f4dfc7f29f7fb931482e49a1fc0ad402bd755be295b3c97f17ab573162ef4e24",
+    "sha256": "cae7b08849adbb69cd3f203ae9f062c7de5ca6e6d57606fe831f02e95240b1c8",
     "path": "second-brain/tests/test_improvement.py"
   },
   {

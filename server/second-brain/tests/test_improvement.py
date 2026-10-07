@@ -611,6 +611,8 @@ class SubscriptionAdapterContractTests(unittest.TestCase):
             stdin = BinaryStream(json.dumps(packet).encode("utf-8"))
             stdout = BinaryStream()
             with (
+                # This harness tests the contract, not host sandbox isolation.
+                mock.patch.object(adapter.sys, "platform", "darwin"),
                 mock.patch.object(adapter, "_safe_sandbox_exec", return_value=harness),
                 mock.patch.object(adapter.sys, "stdin", stdin),
                 mock.patch.object(adapter.sys, "stdout", stdout),
