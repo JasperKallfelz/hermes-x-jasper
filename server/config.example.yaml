@@ -1,0 +1,24 @@
+# Portable defaults, written into the new installation's private home directory.
+# Add your own provider/account through `bin/hermes setup` after installation.
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: true
+  provider: ""
+context:
+  engine: compressor
+browser:
+  engine: auto
+  allow_private_urls: false
+  record_sessions: false
+delegation:
+  max_concurrent_children: 4
+  max_spawn_depth: 2
+  subagent_auto_approve: false
+code_execution:
+  mode: project
+  timeout: 300
+streaming:
+  enabled: true
+voice:
+  auto_tts: false

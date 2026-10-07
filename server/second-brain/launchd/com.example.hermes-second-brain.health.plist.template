@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.hermes-second-brain.health</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PROJECT_DIR__/scripts/health_check.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/health.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/health.err</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PROJECT_DIR</key>
+    <string>__PROJECT_DIR__</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>MANIFEST</key>
+    <string>__PROJECT_DIR__/config/manifest.json</string>
+  </dict>
+</dict>
+</plist>

@@ -1,0 +1,1 @@
+Ghostty is Robin's preferred terminal candidate for low-latency local workflow experiments.

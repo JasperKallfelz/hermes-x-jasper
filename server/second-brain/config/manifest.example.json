@@ -1,0 +1,227 @@
+{
+  "state_db": ".state/hermes-second-brain.sqlite3",
+  "context_inbox_db": "~/.hermes/second-brain/context-inbox.sqlite3",
+  "ov_binary": "ov",
+  "concurrency": 2,
+  "retry_attempts": 3,
+  "sources": [
+    {
+      "id": "repo-brain",
+      "root": "../../../brain",
+      "namespace": "brain",
+      "include_extensions": [
+        ".docx",
+        ".md",
+        ".pdf",
+        ".txt"
+      ],
+      "exclude_globs": [
+        "**/.git/**",
+        "**/.venv/**",
+        "**/cache/**",
+        "**/build/**",
+        "**/*token*",
+        "**/*password*",
+        "**/*passwd*",
+        "**/*api[-_]?key*",
+        "**/*private[-_]?key*",
+        "**/*oauth*",
+        "**/*cookie*",
+        "**/*credential*",
+        "**/*secret*",
+        "**/*auth[-_]?token*",
+        "**/*access[-_]?key*"
+      ]
+    },
+    {
+      "id": "context-inbox",
+      "root": "~/.hermes/second-brain/import/context",
+      "namespace": "context",
+      "include_extensions": [
+        ".txt"
+      ],
+      "exclude_globs": [
+        "**/*token*",
+        "**/*password*",
+        "**/*passwd*",
+        "**/*api[-_]?key*",
+        "**/*private[-_]?key*",
+        "**/*oauth*",
+        "**/*cookie*",
+        "**/*credential*",
+        "**/*secret*",
+        "**/.env*"
+      ]
+    },
+    {
+      "id": "mail-context-bundles",
+      "root": "~/.hermes/second-brain/import/mail-bundles",
+      "namespace": "mail",
+      "include_extensions": [
+        ".md"
+      ],
+      "exclude_globs": [
+        "**/*token*",
+        "**/*password*",
+        "**/*passwd*",
+        "**/*api[-_]?key*",
+        "**/*private[-_]?key*",
+        "**/*oauth*",
+        "**/*cookie*",
+        "**/*credential*",
+        "**/*secret*",
+        "**/*auth[-_]?token*",
+        "**/*access[-_]?key*",
+        "**/.env*"
+      ]
+    },
+    {
+      "id": "dream-conclusions",
+      "root": "~/.hermes/second-brain/import/dreams",
+      "namespace": "dreams",
+      "include_extensions": [
+        ".md"
+      ],
+      "exclude_globs": [
+        "**/*token*",
+        "**/*password*",
+        "**/*passwd*",
+        "**/*api[-_]?key*",
+        "**/*private[-_]?key*",
+        "**/*oauth*",
+        "**/*cookie*",
+        "**/*credential*",
+        "**/*secret*",
+        "**/*auth[-_]?token*",
+        "**/*access[-_]?key*",
+        "**/.env*"
+      ]
+    }
+  ],
+  "dreaming": {
+    "enabled": false,
+    "timezone": "Europe/Berlin",
+    "profiles": [
+      {
+        "name": "default",
+        "state_db": "~/.hermes/state.db",
+        "lcm_db": "~/.hermes/lcm.db",
+        "enabled": false
+      },
+      {
+        "name": "workspace-chat",
+        "state_db": "~/.hermes/profiles/workspace-chat/state.db",
+        "lcm_db": "~/.hermes/profiles/workspace-chat/lcm.db",
+        "enabled": false
+      },
+      {
+        "name": "reading-list",
+        "state_db": "~/.hermes/profiles/reading-list/state.db",
+        "lcm_db": "~/.hermes/profiles/reading-list/lcm.db",
+        "enabled": false
+      }
+    ],
+    "dream_state_db": "~/.hermes/second-brain/dream-state.sqlite3",
+    "reports_dir": "~/.hermes/second-brain/dreams/reports",
+    "import_dir": "~/.hermes/second-brain/import/dreams",
+    "dreams_md": "~/.hermes/second-brain/dreams/DREAMS.md",
+    "staging_dir": "~/.hermes/second-brain/dreams/staging",
+    "lifecycle_db": "~/.hermes/second-brain/lifecycle.sqlite3",
+    "improvement_db": "~/.hermes/second-brain/improvements.sqlite3",
+    "model": {
+      "command": [
+        "claude-subscription"
+      ],
+      "model": "sonnet",
+      "effort": "high",
+      "safe_mode": true,
+      "session_persistence": false,
+      "allow_tools": false,
+      "retry_attempts": 2,
+      "retry_backoff_seconds": 2.0,
+      "max_output_bytes": 2000000,
+      "phase_timeout_seconds": {
+        "light": 420,
+        "rem": 420,
+        "deep": 420
+      }
+    },
+    "budgets": {
+      "sessions_per_round": 12,
+      "messages_per_session": 40,
+      "characters_per_message": 1200,
+      "characters_per_session": 6000,
+      "characters_per_batch": 60000,
+      "evidence_snippet_characters": 320,
+      "max_candidates_per_round": 60,
+      "max_connections_per_round": 40,
+      "max_retrieval_queries": 8,
+      "max_retrieval_hits_per_query": 5,
+      "max_retrieval_snippet_characters": 400,
+      "max_report_items": 25
+    },
+    "thresholds": {
+      "promote_min_score": 0.72,
+      "promote_min_evidence": 2,
+      "promote_min_unique_sessions": 2,
+      "promote_min_unique_days": 2,
+      "promote_require_user_or_canonical": true,
+      "inbox_min_score": 0.55,
+      "inbox_min_evidence": 1,
+      "hypothesis_min_score": 0.35
+    },
+    "retrieval": {
+      "enabled": true,
+      "endpoint_url": "http://127.0.0.1:1933/api/v1/search/find",
+      "namespaces": [
+        "brain",
+        "notes",
+        "sessions",
+        "legacy-memory",
+        "context"
+      ],
+      "canonical_namespaces": [
+        "brain",
+        "notes"
+      ],
+      "timeout_seconds": 15,
+      "limit": 5,
+      "max_response_bytes": 1000000
+    },
+    "lookback_days": 14,
+    "full_backfill_enabled": true,
+    "loop_interval_minutes": 20,
+    "max_rounds": 64,
+    "nightly_start_local": "03:00",
+    "catchup_until_local": "06:30",
+    "lease_seconds": 3600,
+    "retain_runs": 200,
+    "retain_reports": 60,
+    "retain_publications": 200,
+    "excluded_session_sources": [
+      "cron",
+      "subagent"
+    ]
+  },
+  "b_plus": {
+    "lifecycle_db": "~/.hermes/second-brain/lifecycle.sqlite3",
+    "observatory_db": "~/.hermes/second-brain/process-observatory.sqlite3",
+    "observatory_spool": "~/.hermes/second-brain/process-observatory-spool.d",
+    "observatory_quarantine": "~/.hermes/second-brain/process-observatory-quarantine.d",
+    "observatory_retention_days": 90,
+    "improvement_db": "~/.hermes/second-brain/improvements.sqlite3",
+    "improvement_ttl_days": 30,
+    "review": {
+      "claude_wrapper": "claude-subscription",
+      "codex_cli": "/opt/homebrew/bin/codex",
+      "codex_auth_file": "~/.codex/auth.json",
+      "sandbox_exec": "/usr/bin/sandbox-exec",
+      "primary_model": "sonnet",
+      "primary_effort": "high",
+      "primary_timeout_seconds": 420,
+      "secondary_timeout_seconds": 420,
+      "primary_max_output_bytes": 256000,
+      "secondary_max_output_bytes": 256000
+    }
+  }
+}

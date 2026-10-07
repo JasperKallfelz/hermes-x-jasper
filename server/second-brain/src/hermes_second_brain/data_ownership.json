@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "title": "Hermes Second Brain data ownership and routing boundaries",
+  "routing_boundaries": {
+    "durable_fact": "A stable user fact or preference is curated into USER.md; it is never made durable merely because it appeared in temporary context or intake staging.",
+    "temporary_context": "Short-lived situational context belongs only in the Context Inbox TTL table with an explicit UTC expiry and is never mirrored into durable memory or OpenViking.",
+    "routine": "A recurring user routine belongs to the single Hermes-native recurring reminder and routine workflow; Context Inbox habit hypotheses are derived signals staged for review, never an alternative routine master, and routines are never written to USER.md, MEMORY.md, or the TTL table.",
+    "episode": "A time-bounded episode may use the Context Inbox TTL table when it has an explicit expiry; raw transcript history remains owned by the canonical Hermes session-state store, and LCM summaries are derived rather than a second master.",
+    "self_lesson": "An assistant operational lesson or environment fact is deliberately curated into MEMORY.md, never inferred from an unapproved staged plan."
+  },
+  "categories": [
+    {
+      "id": "critical_user_facts_preferences",
+      "description": "Critical always-on facts and preferences about the user.",
+      "routing": "durable_fact",
+      "stores": [
+        {"id": "user_md", "system": "hermes_profile_memory", "location": "$HERMES_HOME/memories/USER.md", "role": "master", "master": true, "write_policy": "curated_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed memory_fact rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "assistant_operational_lessons_environment",
+      "description": "Assistant operational lessons and stable environment knowledge.",
+      "routing": "self_lesson",
+      "stores": [
+        {"id": "memory_md", "system": "hermes_profile_memory", "location": "$HERMES_HOME/memories/MEMORY.md", "role": "master", "master": true, "write_policy": "curated_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed memory_fact rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "raw_session_transcript_history",
+      "description": "Raw conversations and session history mastered by Hermes state, with LCM summaries and search indexes derived from them.",
+      "routing": "history",
+      "stores": [
+        {"id": "raw_session_state", "system": "hermes_state_lcm", "location": "Hermes profile session and state databases", "role": "master", "master": true, "write_policy": "hermes_core_only"},
+        {"id": "lcm_summaries", "system": "hermes_state_lcm", "location": "Hermes LCM derived session summary tables", "role": "derived_index", "master": false, "write_policy": "hermes_core_only"},
+        {"id": "openviking_session_index", "system": "openviking", "location": "viking://resources configured session namespace", "role": "derived_index", "master": false, "write_policy": "indexer_only"}
+      ]
+    },
+    {
+      "id": "passive_messaging_context",
+      "description": "Canonical passive message observations and their local derived rankings.",
+      "routing": "passive_context",
+      "stores": [
+        {"id": "context_events", "system": "context_inbox_sqlite", "location": "context-inbox.sqlite3 context_events table", "role": "master", "master": true, "write_policy": "context_inbox_only"},
+        {"id": "openviking_context_index", "system": "openviking", "location": "viking://resources configured context namespace", "role": "derived_index", "master": false, "write_policy": "indexer_only"}
+      ]
+    },
+    {
+      "id": "user_documents_notes",
+      "description": "User-authored documents and notes at their original roots or chosen destination application.",
+      "routing": "document",
+      "stores": [
+        {"id": "original_documents", "system": "user_source_roots", "location": "manifest-declared original roots and explicitly selected note destination", "role": "master", "master": true, "write_policy": "source_owner_only"},
+        {"id": "openviking_document_index", "system": "openviking", "location": "viking://resources configured document namespaces", "role": "derived_index", "master": false, "write_policy": "indexer_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed note rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "searchable_retrieval_mirror",
+      "description": "Routing policy for searchable mirrors whose content remains owned by source category masters.",
+      "routing": "retrieval_index",
+      "stores": [
+        {"id": "source_master_policy", "system": "second_brain_routing_policy", "location": "data_ownership.json category master declarations", "role": "master", "master": true, "write_policy": "policy_only"},
+        {"id": "openviking", "system": "openviking", "location": "viking://resources derived searchable indexes", "role": "derived_index", "master": false, "write_policy": "indexer_only"}
+      ]
+    },
+    {
+      "id": "ttl_temporary_context_episodes",
+      "description": "Expiring context and episodes with no durable-memory promotion path.",
+      "routing": "temporary_context",
+      "stores": [
+        {"id": "temporary_memory", "system": "context_inbox_sqlite", "location": "context-inbox.sqlite3 context_temporary_memory table", "role": "master", "master": true, "write_policy": "context_inbox_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed temporary_context rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "briefing_preferences",
+      "description": "Typed local configuration controlling daily briefing selection and display bounds.",
+      "routing": "preference",
+      "stores": [
+        {"id": "briefing_preferences_file", "system": "briefing_preferences_file", "location": "$HOME/.hermes/second-brain/briefing-preferences.json", "role": "master", "master": true, "write_policy": "preferences_cli_only"}
+      ]
+    },
+    {
+      "id": "personal_tasks_reminders",
+      "description": "Personal tasks and one-time reminders, distinct from Hermes work orders.",
+      "routing": "personal_task",
+      "stores": [
+        {"id": "native_todo_cron", "system": "hermes_native_todo_cron", "location": "Hermes native todo, reminder, and cron records", "role": "master", "master": true, "write_policy": "native_tools_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed reminder and personal_task rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "routines",
+      "description": "Recurring user routines mastered by the Hermes native workflow; Context Inbox habit hypotheses are derived signals only.",
+      "routing": "routine",
+      "stores": [
+        {"id": "native_recurring_workflow", "system": "hermes_native_todo_cron", "location": "Hermes native recurring reminder and routine workflow records", "role": "master", "master": true, "write_policy": "native_tools_only"},
+        {"id": "habit_hypotheses", "system": "context_inbox_sqlite", "location": "context-inbox.sqlite3 context_habit_hypotheses derived rows", "role": "derived_index", "master": false, "write_policy": "context_inbox_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed routine rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "hermes_work_orders",
+      "description": "Assistant work orders for Kanban and delegation, distinct from personal tasks.",
+      "routing": "work_order",
+      "stores": [
+        {"id": "native_kanban", "system": "hermes_native_kanban", "location": "Hermes native Kanban and delegation records", "role": "master", "master": true, "write_policy": "native_tools_only"},
+        {"id": "typed_intake", "system": "context_inbox_sqlite", "location": "context_intake_items proposed hermes_work_order rows", "role": "staging", "master": false, "write_policy": "staging_only"}
+      ]
+    },
+    {
+      "id": "profile_runtime_config",
+      "description": "Hermes runtime configuration owned by the active profile configuration files.",
+      "routing": "runtime_config",
+      "stores": [
+        {"id": "profile_config", "system": "profile_config_files", "location": "$HERMES_HOME/config.yaml", "role": "master", "master": true, "write_policy": "profile_owner_only"}
+      ]
+    }
+  ]
+}

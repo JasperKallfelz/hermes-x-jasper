@@ -18,7 +18,16 @@ actually limiting the job. In particular, give an individual long-running test
 gate a larger `timeout_seconds` in `.hermes-gates.json`; do not increase the
 global `code_execution.timeout` to accommodate it.
 
-## What this starter ships (and what it does not)
+## Current server snapshot
+
+`setup-server.sh` installs the sanitized October server bundle in `server/`.
+Its independent pin lives in `server/source-lock.json`; checksums cover the
+complete bundled source. See `server/README.md` for included components and
+exclusions. Never copy live state or credentials into this repository. Test the
+new Second Brain from `server/second-brain` with `PYTHONPATH=src`; the root
+`second-brain/` tree is a separate legacy package with the same import name.
+
+## What the legacy starter ships (and what it does not)
 
 - **Pinned upstream.** Hermes Agent is cloned at commit
   `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` (v0.19.0, tag `v2026.7.20`) and

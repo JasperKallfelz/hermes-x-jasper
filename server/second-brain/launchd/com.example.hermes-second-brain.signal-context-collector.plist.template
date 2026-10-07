@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.hermes-second-brain.signal-context-collector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_3_11__</string>
+    <string>__PROJECT_DIR__/scripts/signal_context_collector.py</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/signal-context-collector.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/signal-context-collector.err</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SIGNAL_HTTP_URL</key>
+    <string>http://127.0.0.1:8080</string>
+    <key>SIGNAL_ACCOUNT</key>
+    <string>__SIGNAL_E164_ACCOUNT__</string>
+    <key>HERMES_CONTEXT_INBOX_SPOOL</key>
+    <string>__HOME__/.hermes/second-brain/context-inbox-spool.jsonl</string>
+    <key>SIGNAL_CONTEXT_COLLECTOR_LOG_LEVEL</key>
+    <string>INFO</string>
+  </dict>
+</dict>
+</plist>

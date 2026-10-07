@@ -1,0 +1,19 @@
+{
+  "gates": [
+    {
+      "name": "unit",
+      "argv": [
+        "env",
+        "PYTHONPATH=src",
+        "python3.11",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ],
+      "timeout_seconds": 180
+    }
+  ]
+}

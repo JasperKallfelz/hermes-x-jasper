@@ -1,0 +1,3 @@
+{"message_id":"m-1","received_at":"2026-07-17T09:00:00Z","from_domain":"example.com","subject":"Project update","body_text":"Ghostty workflow notes attached","tags":["workflow"],"retention_days":30}
+{"message_id":"m-2","received_at":"2026-07-17T09:01:00Z","from_domain":"security.example","subject":"Your verification code is 123456","body_text":"Use login code 123456 to continue","tags":["security"],"retention_days":1}
+{"message_id":"m-1","received_at":"2026-07-17T09:00:00Z","from_domain":"example.com","subject":"Project update","body_text":"Ghostty workflow notes attached","tags":["workflow"],"retention_days":30}

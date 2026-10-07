@@ -1,0 +1,20 @@
+{
+  "k": 3,
+  "queries": [
+    {
+      "query": "Welche Quelle beschreibt DEMO_PROJECT Rugby Simulation?",
+      "namespace": "brain",
+      "expected_source_ids": ["brain:demo_project"]
+    },
+    {
+      "query": "Ghostty terminal workflow",
+      "namespace": "brain",
+      "expected_source_ids": ["brain:ghostty"]
+    },
+    {
+      "query": "OpenViking statt MEMORY prompt flooding",
+      "namespace": "brain",
+      "expected_source_ids": ["brain:workflow"]
+    }
+  ]
+}

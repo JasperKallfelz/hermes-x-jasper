@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.hermes-second-brain.signal-desktop-history</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HERMES_PYTHON__</string>
+    <string>__PROJECT_DIR__/scripts/signal_desktop_collector.py</string>
+    <string>--config</string>
+    <string>__HOME__/Library/Application Support/Signal/config.json</string>
+    <string>--signal-db</string>
+    <string>__HOME__/Library/Application Support/Signal/sql/db.sqlite</string>
+    <string>--attachments</string>
+    <string>__HOME__/Library/Application Support/Signal/attachments.noindex</string>
+    <string>--context-db</string>
+    <string>__HOME__/.hermes/second-brain/context-inbox.sqlite3</string>
+    <string>--state</string>
+    <string>__HOME__/.hermes/second-brain/signal-desktop-history-state.json</string>
+    <string>--sqlcipher</string>
+    <string>__SQLCIPHER__</string>
+    <string>--login-keychain</string>
+    <string>__HOME__/Library/Keychains/login.keychain-db</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/signal-desktop-history.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.hermes/second-brain/logs/signal-desktop-history.err</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PROJECT_DIR</key>
+    <string>__PROJECT_DIR__</string>
+  </dict>
+</dict>
+</plist>

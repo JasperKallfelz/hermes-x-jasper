@@ -1,0 +1,30 @@
+name: process-observatory
+version: "1.0.0"
+description: >-
+  Passive, metadata-only Process Observatory. Observes Hermes tool, LLM,
+  subagent, session-finalize, and Kanban lifecycle hooks and writes strictly
+  bounded, allowlisted metadata (hashed identifiers, event kind, tool/model
+  family, duration, status, classified error type, timestamps, lifecycle
+  signals) to a private spool. Never stores tool args/results, prompts, model
+  text, command strings, message bodies, paths, credentials, or raw content.
+  The hook path is fail-open and non-blocking; a separate importer drains the
+  spool into a private SQLite process-observatory store.
+author: second-brain
+kind: standalone
+# The current Hermes plugin manifest contract; actual callbacks are registered
+# by register() in __init__.py.
+provides_hooks:
+  - post_tool_call
+  - post_llm_call
+  - post_api_request
+  - api_request_error
+  - subagent_start
+  - subagent_stop
+  - on_session_finalize
+  - kanban_task_claimed
+  - kanban_task_completed
+  - kanban_task_blocked
+# Optional: override the spool location (defaults to a private path under
+# ~/.hermes/second-brain/). The queue directory is created 0700 and event
+# files 0600; symlinked queues are refused.
+requires_env: []

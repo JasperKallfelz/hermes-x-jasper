@@ -1,0 +1,1547 @@
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index 48a6c1a6732..95d6301e5fe 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -104,9 +104,12 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
+                             counts=lambda: billing(billing_mode="subscription_included"))
+         return {}
+     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
++    # Codex inputTokens includes cache hits; CanonicalUsage stores uncached input.
++    input_total = _coerce_usage_int(usage.get("inputTokens"))
++    cached_input = _coerce_usage_int(usage.get("cachedInputTokens"))
+     canonical_usage = CanonicalUsage(
+-        input_tokens=_coerce_usage_int(usage.get("inputTokens")), output_tokens=_coerce_usage_int(usage.get("outputTokens")),
+-        cache_read_tokens=_coerce_usage_int(usage.get("cachedInputTokens")), cache_write_tokens=0,
++        input_tokens=max(0, input_total - cached_input), output_tokens=_coerce_usage_int(usage.get("outputTokens")),
++        cache_read_tokens=cached_input, cache_write_tokens=0,
+         reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
+     )
+     prompt_tokens = canonical_usage.prompt_tokens
+@@ -190,7 +193,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
+ # into the callbacks the standard runtime fires (tool_progress_callback, _fire_stream_delta, ...).
+ 
+ # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
+-# so UI names match recorded names). webSearch is codex's built-in tool: no projector entry, still gets a bubble.
++# so UI names match recorded names).
+ _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
+ # Internal MCP server wrapping Hermes' native tools: its inner dispatch has no tool_progress_callback, so the
+ # codex-level mcpToolCall IS the display event and the mcp.hermes-tools.* prefix is stripped (users see Hermes tools).
+@@ -361,6 +364,98 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
+ 
+ # --- Codex app-server turn ----------------------------------------------------
+ 
++_CODEX_THREAD_STATE_KEY = "codex_app_server_thread"
++_CODEX_HISTORY_BOOTSTRAP_MAX_CHARS = 80_000
++
++
++def _session_model_config(session: dict[str, Any]) -> dict[str, Any]:
++    raw = session.get("model_config")
++    if isinstance(raw, dict):
++        return raw
++    if isinstance(raw, str):
++        with suppress(json.JSONDecodeError, TypeError):
++            parsed = json.loads(raw)
++            return parsed if isinstance(parsed, dict) else {}
++    return {}
++
++
++def _load_codex_thread_id(agent) -> str | None:
++    """Load a thread only when it belongs to this exact, unrewound Hermes session."""
++    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
++    if db is None or not session_id:
++        return None
++    try:
++        session = db.get_session(session_id) or {}
++        state = _session_model_config(session).get(_CODEX_THREAD_STATE_KEY)
++        if not isinstance(state, dict):
++            return None
++        if state.get("session_id") != session_id:
++            return None
++        if state.get("rewind_count", 0) != session.get("rewind_count", 0):
++            return None
++        thread_id = state.get("thread_id")
++        return thread_id if isinstance(thread_id, str) and thread_id else None
++    except Exception:
++        logger.warning("codex app-server thread-state read failed; using history recovery", exc_info=True)
++        return None
++
++
++def _remember_codex_thread(agent, thread_id: str | None) -> None:
++    """Persist the Codex thread identity so a recreated AIAgent can resume it."""
++    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
++    if db is None or not session_id or not thread_id:
++        return
++    try:
++        session = db.get_session(session_id) or {}
++        db.patch_session_model_config(session_id, {_CODEX_THREAD_STATE_KEY: {
++            "session_id": session_id,
++            "thread_id": thread_id,
++            "rewind_count": session.get("rewind_count", 0),
++        }})
++    except Exception:
++        logger.warning("codex app-server thread-state persistence failed", exc_info=True)
++
++
++def _message_text(content: Any) -> str:
++    if isinstance(content, str):
++        return content.strip()
++    if not isinstance(content, list):
++        return "" if content is None else str(content).strip()
++    parts: list[str] = []
++    for part in content:
++        if isinstance(part, str):
++            parts.append(part)
++        elif isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"}:
++            parts.append(str(part.get("text") or part.get("content") or ""))
++        elif isinstance(part, dict) and part.get("type") in {"image", "image_url", "input_image"}:
++            parts.append("[image attached]")
++    return "\n".join(piece for piece in parts if piece).strip()
++
++
++def _codex_recovery_input(messages: List[Dict[str, Any]], user_message: str) -> str:
++    """Prepend the persisted Hermes transcript when Codex has no resumable thread."""
++    prior = messages[:-1] if messages and messages[-1].get("role") == "user" else messages
++    labels = {"user": "User", "assistant": "Assistant", "tool": "Tool"}
++    transcript = "\n\n".join(
++        f"{labels[role]}: {text}"
++        for message in prior
++        if (role := message.get("role")) in labels
++        if (text := _message_text(message.get("content")))
++    )
++    if not transcript:
++        return user_message
++    transcript = transcript[-_CODEX_HISTORY_BOOTSTRAP_MAX_CHARS:]
++    return (
++        "The Codex worker thread was recreated. Recover the conversation context from the "
++        "Hermes transcript below, then answer the current user message without mentioning this recovery.\n\n"
++        "<hermes_history>\n"
++        f"{transcript}\n"
++        "</hermes_history>\n\n"
++        "<current_user_message>\n"
++        f"{user_message}\n"
++        "</current_user_message>"
++    )
++
+ 
+ def _close_codex_session(agent) -> None:
+     """Drop the session so the next turn respawns codex instead of reusing a dead client."""
+@@ -405,9 +500,15 @@ def _ensure_codex_session(agent) -> None:
+     # narrower item/started-only bridge from #38835.
+     agent._codex_session = CodexAppServerSession(
+         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
++        resume_thread_id=_load_codex_thread_id(agent),
+         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
+         on_event=make_codex_app_server_event_bridge(agent),
+     )
++    # A stop can arrive before the lazy session exists (including while its
++    # constructor arguments are resolved). Publish it to Codex's private event
++    # after assignment; later stops already reach request_interrupt directly.
++    if getattr(agent, "_interrupt_requested", False):
++        agent._codex_session.request_interrupt()
+ 
+ 
+ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> None:
+@@ -479,7 +580,12 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
+                                   "without a truthful pre-compaction transcript boundary")
+     _ensure_codex_session(agent)
+     try:
+-        turn = agent._codex_session.run_turn(user_input=user_message)
++        agent._codex_session.ensure_started()
++        turn_input = (
++            _codex_recovery_input(messages, user_message)
++            if agent._codex_session.needs_history_bootstrap else user_message
++        )
++        turn = agent._codex_session.run_turn(user_input=turn_input)
+     except Exception as exc:
+         logger.exception("codex app-server turn failed")
+         _close_codex_session(agent)
+@@ -487,6 +593,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
+             _consume_user_interrupt(agent), messages, api_calls=0, completed=False, error=str(exc),
+             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
+         )
++    _remember_codex_thread(agent, turn.thread_id)
+     interrupt = _consume_user_interrupt(agent, turn.interrupted)
+     # Wedged client (deadline blown, watchdog tripped, OAuth refresh died, subprocess exited): retire it.
+     if getattr(turn, "should_retire", False):
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 77db1c348a1..6992e9d3f7f 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1317,23 +1317,21 @@ def _render_skills_index(
+                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+     return (
+         "## Skills\n"
+-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
+-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
+-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
+-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
+-        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
+-        f"even if you think you could handle the task with basic tools like {_basic_tools}. "
+-        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
+-        "code review, planning, and testing — load them even for tasks you already know how to do, because "
+-        "the skill defines how it should be done here.\n"
+-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
+-        "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
+-        "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
++        "Use the skill descriptions below to select guidance that materially applies to the current task. "
++        "Load explicitly requested skills and clearly applicable workflows with skill_view(name), and follow "
++        "their instructions. Skills contain local commands, user preferences, and important constraints. "
++        "Do not load additional skills solely because they share a keyword or touch an adjacent topic. "
++        "Reuse skill content already present in this conversation; reload only if it has changed or is no "
++        "longer available in context. Read supporting references only when their specific workflow is needed. "
++        f"For simple requests without an applicable skill, use {_basic_tools} directly when needed.\n"
++        "Complete the user's task before optional skill maintenance. Correct a discovered wrong command "
++        "when needed for the current task; do not add skill editing, skill creation, or unrelated workflow "
++        "cleanup to every response.\n"
+         "\n"
+         "<available_skills>\n"
+         + "\n".join(index_lines) + "\n"
+         "</available_skills>\n\n"
+-        "Only proceed without loading a skill if genuinely none are relevant to the task."
++        "Keep skill selection proportional to the task while preserving applicable instructions."
+         + hidden_note
+     )
+ 
+diff --git a/agent/transports/codex_app_server_session.py b/agent/transports/codex_app_server_session.py
+index effc28e69d4..63f7e6b736a 100644
+--- a/agent/transports/codex_app_server_session.py
++++ b/agent/transports/codex_app_server_session.py
+@@ -151,6 +151,7 @@ class CodexAppServerSession:
+     def __init__(
+         self, *, cwd: Optional[str] = None, codex_bin: str = "codex",
+         codex_home: Optional[str] = None, permission_profile: Optional[str] = None,
++        resume_thread_id: Optional[str] = None,
+         approval_callback: Optional[Callable[..., str]] = None,
+         on_event: Optional[Callable[[dict], None]] = None,
+         request_routing: Optional[_ServerRequestRouting] = None,
+@@ -169,6 +170,8 @@ class CodexAppServerSession:
+ 
+         self._client: Optional[CodexAppServerClient] = None
+         self._thread_id: Optional[str] = None
++        self._resume_thread_id = resume_thread_id
++        self._started_fresh = resume_thread_id is None
+         self._interrupt_event = threading.Event()
+         self._active_turn_id: Optional[str] = None
+         self._active_turn_lock = threading.Lock()
+@@ -177,13 +180,51 @@ class CodexAppServerSession:
+         self._pending_file_changes: dict[str, str] = {}
+         self._closed = False
+ 
++    @property
++    def thread_id(self) -> Optional[str]:
++        """The active or requested Codex thread id, for durable session bookkeeping."""
++        return self._thread_id or self._resume_thread_id
++
++    @property
++    def needs_history_bootstrap(self) -> bool:
++        """Whether this process started a new thread instead of resuming a persisted one."""
++        return self._started_fresh
++
++    @staticmethod
++    def _rollout_is_missing(exc: CodexAppServerError) -> bool:
++        message = (exc.message or "").lower()
++        return exc.code == -32602 and "no rollout found" in message
++
+     def ensure_started(self) -> str:
+-        """Spawn, handshake, and ``thread/start``; idempotent, returns the codex thread id."""
++        """Spawn, handshake, then resume a durable thread or start a new one."""
+         if self._thread_id is not None:
+             return self._thread_id
+         if self._client is None:
+             self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
+         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
++        if self._resume_thread_id:
++            try:
++                result = self._client.request(
++                    "thread/resume", {"threadId": self._resume_thread_id}, timeout=15,
++                )
++            except CodexAppServerError as exc:
++                if not self._rollout_is_missing(exc):
++                    raise
++                logger.warning(
++                    "codex app-server rollout missing for thread=%s; starting a replacement thread",
++                    self._resume_thread_id[:8],
++                )
++                self._resume_thread_id = None
++                self._started_fresh = True
++            else:
++                thread_obj = result.get("thread") or {}
++                self._thread_id = (
++                    thread_obj.get("id") or thread_obj.get("sessionId")
++                    or result.get("sessionId") or result.get("threadId") or self._resume_thread_id
++                )
++                self._started_fresh = False
++                logger.info("codex app-server thread resumed: id=%s", self._thread_id[:8])
++                return self._thread_id
+         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
+         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
+         result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
+@@ -195,6 +236,7 @@ class CodexAppServerSession:
+                 code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
+             )
+         self._thread_id = thread_id
++        self._started_fresh = True
+         logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
+         return thread_id
+ 
+@@ -363,9 +405,25 @@ class CodexAppServerSession:
+         result.turn_id = (ts.get("turn") or {}).get("id")
+         with self._active_turn_lock:
+             self._active_turn_id = result.turn_id
+-        # Post-tool watchdog: armed on each tool completion, cleared by any other activity.
++        # Streaming deltas are display-only in the projector, but are still live
++        # progress. Refresh the idle clock without treating a partial item as final.
+         last_tool_completion_at: Optional[float] = None
+ 
++        def observe_progress(note: dict, projection: ProjectionResult) -> None:
++            nonlocal last_tool_completion_at
++            if projection.is_tool_iteration:
++                last_tool_completion_at = time.monotonic()
++            elif projection.messages or projection.final_text is not None:
++                last_tool_completion_at = None
++            elif last_tool_completion_at is not None and note.get("method") in {
++                "item/agentMessage/delta", "item/reasoning/textDelta",
++                "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
++                "item/fileChange/outputDelta",
++            }:
++                delta = (note.get("params") or {}).get("delta")
++                if isinstance(delta, str) and delta:
++                    last_tool_completion_at = time.monotonic()
++
+         def watchdog_tripped() -> bool:
+             if last_tool_completion_at is None or (time.monotonic() - last_tool_completion_at) <= post_tool_quiet_timeout:
+                 return False
+@@ -387,8 +445,7 @@ class CodexAppServerSession:
+                     logger.debug("ignoring foreign codex notification while draining server request: method=%s", pending.get("method"))
+                     continue
+                 proj, aborted = self._absorb_notification(result, projector, pending)
+-                if proj.is_tool_iteration:
+-                    last_tool_completion_at = time.monotonic()
++                observe_progress(pending, proj)
+                 turn_complete = turn_complete or aborted
+             self._handle_server_request(sreq)
+             # An approval round-trip is live signal — don't let it trip the watchdog.
+@@ -396,12 +453,8 @@ class CodexAppServerSession:
+             return turn_complete
+ 
+         def on_note(note: dict, method: str) -> bool:
+-            nonlocal last_tool_completion_at
+             projection, aborted = self._absorb_notification(result, projector, note)
+-            if projection.is_tool_iteration:
+-                last_tool_completion_at = time.monotonic()
+-            elif projection.messages or projection.final_text is not None:
+-                last_tool_completion_at = None
++            observe_progress(note, projection)
+             if method != "turn/completed":
+                 return aborted
+             turn_obj = (note.get("params") or {}).get("turn") or {}
+diff --git a/agent/transports/codex_event_projector.py b/agent/transports/codex_event_projector.py
+index 3c5912c0455..d8dbfdaa421 100644
+--- a/agent/transports/codex_event_projector.py
++++ b/agent/transports/codex_event_projector.py
+@@ -1,8 +1,8 @@
+ """Projects codex app-server ``item/*`` notifications into OpenAI-shaped messages.
+ 
+ userMessage → user; agentMessage → assistant; reasoning → stashed onto the next
+-assistant entry; commandExecution / fileChange / mcpToolCall / dynamicToolCall →
+-assistant tool_call + tool result; anything else → opaque assistant note.
++assistant entry; commandExecution / fileChange / mcpToolCall / dynamicToolCall /
++webSearch → assistant tool_call + tool result; other items stay out of chat messages.
+ Each item yields AT MOST one assistant + one tool entry (message-alternation
+ invariant). ``is_tool_iteration`` ticks once per completed tool-shaped item.
+ """
+@@ -63,8 +63,9 @@ class CodexEventProjector:
+         tool_projection = self._TOOL_PROJECTIONS.get(item_type)
+         if tool_projection is not None:
+             return self._project_tool_item(item, item_id, tool_projection)
+-        # Unknown / rare items (plan, hookPrompt, ...): opaque note, no fabricated tool_call structure.
+-        return self._project_opaque(item, item_type)
++        # Protocol metadata is not assistant prose. The native event callback still
++        # receives these items; do not dump their payloads into the chat transcript.
++        return ProjectionResult()
+ 
+     def _assistant_message(self, content: Optional[str], **extra: Any) -> dict[str, Any]:
+         msg: dict[str, Any] = {"role": "assistant", "content": content, **extra}
+@@ -143,17 +144,20 @@ class CodexEventProjector:
+         )
+         return f"dyn_{tool}", tool, _dict_args(item.get("arguments")), content
+ 
++    @staticmethod
++    def _web_search_spec(item: dict) -> tuple[str, str, dict, str]:
++        # Match the live bridge's name, args and stable id. Search/open/find details
++        # belong to the tool result, never a user-facing assistant message.
++        content = json.dumps(
++            {"action": item.get("action"), "results": item.get("results")},
++            ensure_ascii=False,
++        )[:4000]
++        return "web_search", "web_search", {"query": item.get("query") or ""}, content
++
+     _TOOL_PROJECTIONS: dict[str, Callable[[dict], tuple[str, str, dict, str]]] = {
+         "commandExecution": _command_spec,
+         "fileChange": _file_change_spec,
+         "mcpToolCall": _mcp_tool_call_spec,
+         "dynamicToolCall": _dynamic_tool_call_spec,
++        "webSearch": _web_search_spec,
+     }
+-
+-    @staticmethod
+-    def _project_opaque(item: dict, item_type: str) -> ProjectionResult:
+-        try:
+-            payload = json.dumps(item, ensure_ascii=False)[:1500]
+-        except (TypeError, ValueError):
+-            payload = repr(item)[:1500]
+-        return ProjectionResult(messages=[{"role": "assistant", "content": f"[codex {item_type}] {payload}"}])
+diff --git a/agent/transports/hermes_tools_mcp_server.py b/agent/transports/hermes_tools_mcp_server.py
+index 48909a026c1..ba95b1cf9a7 100644
+--- a/agent/transports/hermes_tools_mcp_server.py
++++ b/agent/transports/hermes_tools_mcp_server.py
+@@ -67,9 +67,10 @@ def _build_server() -> Any:
+         instructions=(
+             "Hermes Agent's tool surface, exposed for use inside a Codex "
+             "session. Use these for capabilities Codex's built-in toolset "
+-            "doesn't cover: web search/extract, browser automation, "
+-            "subagent delegation, vision, image generation, persistent "
+-            "memory, skills, and cross-session search."
++            "doesn't cover. Depending on configuration, available tools "
++            "include web search/extract, browser automation, vision, image "
++            "generation, skills, text-to-speech, and Kanban task handoffs. "
++            "Only tools returned by this server's tools/list are available."
+         ),
+     )
+ 
+diff --git a/apps/desktop/src/app/contrib/wiring.tsx b/apps/desktop/src/app/contrib/wiring.tsx
+index 0a4a5198869..54854a5c99d 100644
+--- a/apps/desktop/src/app/contrib/wiring.tsx
++++ b/apps/desktop/src/app/contrib/wiring.tsx
+@@ -1222,7 +1222,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
+           } as CSSProperties
+         }
+       >
+-        {/* HUD and the popped-out Browser have no titlebar to hang these off —
++        {children}
++        {/* Keep no-drag controls after the pane drag regions in DOM order:
++            Electron's native hit testing can otherwise swallow their clicks.
++            HUD and the popped-out Browser have no titlebar to hang these off —
+             the clusters are `fixed`, so without this they'd float over the
+             surface as orphaned buttons. */}
+         {!isHudWindow() && !isBrowserWindow() && (
+@@ -1232,7 +1235,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
+             tools={rightTitlebarTools}
+           />
+         )}
+-        {children}
+       </div>
+ 
+       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 078f7d31e44..0523de70c30 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -149,6 +149,7 @@ from gateway.platforms.base import (
+ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+ from plugins.platforms.telegram.wisdom_adapter import TelegramWisdomMixin
++from plugins.platforms.telegram.idle_session import TelegramIdleSessionMixin
+ from plugins.platforms.telegram.telegram_network import (
+     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
+ from utils import env_float, env_int
+@@ -368,7 +369,7 @@ class _PollingLifecycleAbort(RuntimeError):
+     """Internal control flow for polling startup fenced by teardown."""
+ 
+ 
+-class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
++class TelegramAdapter(TelegramIdleSessionMixin, TelegramWisdomMixin, BasePlatformAdapter):
+     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
+ 
+     MAX_MESSAGE_LENGTH = 4096
+@@ -3171,6 +3172,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+         with contextlib.suppress(Exception):
+             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
+         await self._await_disconnect_step(self._cancel_pending_delivery_tasks(), _DISCONNECT_STEP_TIMEOUT, "pending-delivery cancel")
++        await self._await_disconnect_step(self._cancel_idle_session_tasks(), _DISCONNECT_STEP_TIMEOUT, "idle-session cancel")
+         if self._app:
+             try:
+                 # Bounded: a CLOSE-WAIT socket can wedge updater.stop() forever; fall through on timeout.
+@@ -3342,7 +3344,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+         with contextlib.suppress(Exception):
+             await self.send_typing(chat_id, metadata=metadata)
+ 
+-    async def send(
++    async def _send_telegram_text(
+         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+         """Send a message to a Telegram chat."""
+         if not self._bot:
+@@ -3455,7 +3457,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+             await self._edit_text(chat_id, message_id, plain)
+         return False
+ 
+-    async def edit_message(
++    async def _edit_telegram_message(
+         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+         """Edit a previously sent Telegram message.
+@@ -4282,6 +4284,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+                     await handler(query, data, chat_id)
+                 return
+         for prefix, handler in (
++            ("ns:", self._handle_idle_session_callback),
+             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
+             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+             ("update_prompt:", self._handle_update_prompt_callback)):
+@@ -6398,6 +6401,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+ 
+     async def on_processing_start(self, event: MessageEvent) -> None:
+         """Add an in-progress reaction when message processing begins."""
++        await self._idle_processing_start(event)
+         if not self._reactions_enabled():
+             return
+         chat_id = getattr(event.source, "chat_id", None)
+@@ -6408,6 +6412,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+         """Swap the in-progress reaction for a final success/failure reaction (set_message_reaction
+         replaces, not adds); CANCELLED explicitly clears the 👀."""
++        await self._idle_processing_complete(event, outcome)
+         if not self._reactions_enabled():
+             return
+         chat_id = getattr(event.source, "chat_id", None)
+diff --git a/tests/agent/test_codex_context_recovery.py b/tests/agent/test_codex_context_recovery.py
+new file mode 100644
+index 00000000000..a05c490302c
+--- /dev/null
++++ b/tests/agent/test_codex_context_recovery.py
+@@ -0,0 +1,139 @@
++"""A recreated Hermes agent must retain conversation context without duplicating it."""
++
++from types import SimpleNamespace
++
++import pytest
++
++from agent.codex_runtime import run_codex_app_server_turn
++from agent.transports.codex_app_server import CodexAppServerError
++from hermes_state import SessionDB
++
++
++class ContextClient:
++    def __init__(self, threads, requests, resume_error=None):
++        self.threads, self.requests = threads, requests
++        self.resume_error = resume_error
++        self.notes = []
++
++    def initialize(self, **kwargs):
++        return {}
++
++    def request(self, method, params, **kwargs):
++        self.requests.append((method, params))
++        if method == "thread/resume":
++            if self.resume_error:
++                raise self.resume_error
++            return {"thread": {"id": params["threadId"]}}
++        if method == "thread/start":
++            tid = f"thread-{len(self.threads)}"
++            self.threads[tid] = []
++            return {"thread": {"id": tid}}
++        if method == "turn/start":
++            text = params["input"][0]["text"]
++            self.threads[params["threadId"]].append(text)
++            self.notes = [
++                {"method": "item/completed", "params": {"item": {
++                    "type": "userMessage", "id": "u", "content": [{"type": "inputText", "text": text}],
++                }}},
++                {"method": "item/completed", "params": {"item": {
++                    "type": "agentMessage", "id": "a", "text": "answer",
++                }}},
++                {"method": "turn/completed", "params": {"turn": {"id": "turn", "status": "completed"}}},
++            ]
++            return {"turn": {"id": "turn"}}
++        return {}
++
++    def take_notification(self, **kwargs):
++        return self.notes.pop(0) if self.notes else None
++
++    def take_server_request(self, **kwargs):
++        return None
++
++    def is_alive(self):
++        return True
++
++    def stderr_tail(self, *args):
++        return []
++
++    def close(self):
++        pass
++
++
++def agent_for(db, sid):
++    return SimpleNamespace(
++        _session_db=db, session_id=sid, _session_db_created=True,
++        _codex_session=None, session_cwd="/tmp", _skill_nudge_interval=0,
++        valid_tool_names=set(), model="test", provider="openai-codex", base_url="",
++        session_api_calls=0, _interrupt_requested=False,
++        _flush_messages_to_session_db=lambda messages: True,
++    )
++
++
++def run(agent, messages, text):
++    messages.append({"role": "user", "content": text})
++    return run_codex_app_server_turn(
++        agent, user_message=text, original_user_message=text,
++        messages=messages, effective_task_id="test",
++    )
++
++
++@pytest.mark.parametrize("detached", [False, True])
++def test_recreated_agent_recovers_history_once(tmp_path, monkeypatch, detached):
++    import agent.transports.codex_app_server_session as transport
++    threads, requests = {}, []
++    monkeypatch.setattr(transport, "CodexAppServerClient", lambda **kw: ContextClient(threads, requests))
++    db = SessionDB(tmp_path / "state.db")
++    db.create_session(session_id="chat", source="desktop", model="test")
++    history = [{"role": "user", "content": "Measure the ball"},
++               {"role": "assistant", "content": "2311 frames; only pixels/s"}]
++    try:
++        agent = agent_for(db, "chat")
++        assert run(agent, history, "how fast?")["completed"]
++        assert "2311 frames" in threads["thread-0"][0]
++        assert [m["content"] for m in history if m["role"] == "user"] == ["Measure the ball", "how fast?"]
++        agent._codex_session.close()
++        # Reopen the actual DB, as on a backend restart (no in-memory mapping survives).
++        db.close()
++        db = SessionDB(tmp_path / "state.db")
++        agent = agent_for(None if detached else db, "chat")
++        assert run(agent, history, "continue")["completed"]
++        if detached:
++            assert len(threads) == 2  # background reviews share the ID but must never resume the parent
++            assert "2311 frames" in threads["thread-1"][0]
++        else:
++            assert len(threads) == 1
++            assert threads["thread-0"][1] == "continue"
++            assert any(method == "thread/resume" for method, _ in requests)
++        agent._codex_session.close()
++    finally:
++        db.close()
++
++
++@pytest.mark.parametrize("reason", ["missing", "auth", "branch", "rewind"])
++def test_recovery_respects_session_boundaries_and_resume_errors(tmp_path, monkeypatch, reason):
++    import agent.transports.codex_app_server_session as transport
++    threads, requests = {}, []
++    error = None
++    if reason in {"missing", "auth"}:
++        error = CodexAppServerError(code=-32602 if reason == "missing" else -32000,
++                                    message="no rollout found for thread id old" if reason == "missing" else "unauthorized")
++    monkeypatch.setattr(transport, "CodexAppServerClient", lambda **kw: ContextClient(threads, requests, error))
++    db = SessionDB(tmp_path / "state.db")
++    db.create_session(session_id="chat", source="desktop", model="test")
++    db.patch_session_model_config("chat", {"codex_app_server_thread": {
++        "session_id": "parent" if reason == "branch" else "chat", "thread_id": "old",
++        "rewind_count": -1 if reason == "rewind" else 0,
++    }})
++    try:
++        agent = agent_for(db, "chat")
++        history = [{"role": "assistant", "content": "Prior result: pixels/s"}]
++        result = run(agent, history, "continue")
++        assert result["completed"] is (reason != "auth")
++        if reason == "auth":
++            assert not threads  # don't turn credential/transport failures into silent fresh chats
++        else:
++            assert "Prior result: pixels/s" in threads["thread-0"][0]
++        if agent._codex_session:
++            agent._codex_session.close()
++    finally:
++        db.close()
+diff --git a/tests/agent/test_codex_runtime_live_events.py b/tests/agent/test_codex_runtime_live_events.py
+index 06c3cc14db3..07307b2a86e 100644
+--- a/tests/agent/test_codex_runtime_live_events.py
++++ b/tests/agent/test_codex_runtime_live_events.py
+@@ -9,13 +9,16 @@ tool cards depend on.
+ Grafted from PR #65412 (@HaiderSultanArc) onto the merged bridge.
+ """
+ 
++import json
+ from types import SimpleNamespace
+ 
++import pytest
++
+ from agent.codex_runtime import (
+     _codex_item_completion_payload,
+     make_codex_app_server_event_bridge,
+ )
+-from agent.transports.codex_event_projector import _deterministic_call_id
++from agent.transports.codex_event_projector import CodexEventProjector, _deterministic_call_id
+ 
+ 
+ def _recording_agent():
+@@ -104,5 +107,46 @@ def test_failed_command_result_and_error_flag_are_preserved():
+     assert calls["tool_complete"][0][3] == "[exit 2]\nboom"
+ 
+ 
++@pytest.mark.parametrize("action,results", [
++    ({"type": "search", "query": None, "queries": ["account country", "dots availability"]},
++     [{"type": "text_result", "title": "Account help", "url": "https://example.com/help",
++       "snippet": "Public documentation."}]),
++    ({"type": "openPage", "url": "https://example.com/help"},
++     {"type": "text_result", "title": "Account help", "snippet": "Page contents."}),
++    ({"type": "findInPage", "url": "https://example.com/help", "pattern": "country"}, None),
++    (None, None),
++])
++def test_web_search_stays_tool_activity_in_live_and_saved_messages(action, results):
++    agent, calls = _recording_agent()
++    interim = []
++    agent._emit_interim_assistant_message = lambda message: interim.append(message["content"])
++    bridge = make_codex_app_server_event_bridge(agent)
++    projector = CodexEventProjector()
++    item = {"type": "webSearch", "id": "exec-search-1", "query": "account country",
++            "action": action, "results": results}
++    bridge({"method": "item/started", "params": {"item": item}})
++    note = {"method": "item/completed", "params": {"item": item}}
++    bridge(note)
++    projection = projector.project(note)
++
++    assert [m["role"] for m in projection.messages] == ["assistant", "tool"]
++    assistant, tool = projection.messages
++    assert assistant["content"] is None
++    call = assistant["tool_calls"][0]
++    assert call["id"] == tool["tool_call_id"] == calls["tool_start"][0][0] == calls["tool_complete"][0][0]
++    assert call["function"]["name"] == "web_search"
++    assert json.loads(call["function"]["arguments"]) == calls["tool_start"][0][2] == {"query": "account country"}
++    assert json.loads(tool["content"]) == {"action": action, "results": results}
++    assert projection.is_tool_iteration is True
++    assert projection.final_text is None
++    assert interim == calls["stream"] == []
++
++    final_note = {"method": "item/completed", "params": {"item": {
++        "type": "agentMessage", "id": "answer", "text": "Here is the answer."}}}
++    bridge(final_note)
++    final = projector.project(final_note)
++    saved_messages = projection.messages + final.messages
++    assert [m["content"] for m in saved_messages if m["role"] == "assistant" and m.get("content")] == interim == ["Here is the answer."]
++    assert final.final_text == "Here is the answer."
+ 
+ 
+diff --git a/tests/agent/test_usage_anchor.py b/tests/agent/test_usage_anchor.py
+index 12ac3585a63..8b848f8dad1 100644
+--- a/tests/agent/test_usage_anchor.py
++++ b/tests/agent/test_usage_anchor.py
+@@ -273,14 +273,17 @@ class TestCodexAppServerAnchor:
+             "totalTokens": input_tokens + output_tokens,
+         }
+ 
+-    def test_turn_usage_sets_anchor(self):
++    @pytest.mark.parametrize("cached_tokens", [0, 10_000])
++    def test_turn_usage_sets_anchor(self, cached_tokens):
+         from agent.codex_runtime import _record_codex_app_server_usage
+ 
+         messages = _history_with_images(10)
+         agent = self._agent()
++        usage = self._usage()
++        usage["cachedInputTokens"] = cached_tokens
+ 
+         _record_codex_app_server_usage(
+-            agent, self._turn(self._usage()), messages=messages
++            agent, self._turn(usage), messages=messages
+         )
+ 
+         anchor = agent._usage_anchor
+diff --git a/tests/agent/transports/test_codex_app_server_session.py b/tests/agent/transports/test_codex_app_server_session.py
+index 7548e59e291..5c0c8b6caf3 100644
+--- a/tests/agent/transports/test_codex_app_server_session.py
++++ b/tests/agent/transports/test_codex_app_server_session.py
+@@ -126,6 +126,55 @@ def make_session(client: FakeClient, **kwargs) -> CodexAppServerSession:
+     )
+ 
+ 
++@pytest.mark.parametrize("method", [
++    "item/agentMessage/delta", "item/reasoning/textDelta",
++    "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
++    "item/fileChange/outputDelta",
++])
++def test_post_tool_watchdog_allows_continuous_scoped_streaming(monkeypatch, method):
++    client = FakeClient()
++    client.queue_notification("item/completed", threadId="t", turnId="tu1", item={
++        "type": "commandExecution", "id": "cmd", "command": "echo hi", "cwd": "/tmp",
++        "status": "completed", "aggregatedOutput": "hi", "exitCode": 0, "commandActions": [],
++    })
++    for _ in range(4):
++        client.queue_notification(method, threadId="t", turnId="tu1", itemId="stream", delta="more ")
++    client.queue_notification("item/completed", threadId="t", turnId="tu1",
++                              item={"type": "agentMessage", "id": "done", "text": "done"})
++    client.queue_notification("turn/completed", threadId="t", turn={"id": "tu1", "status": "completed"})
++    now = [0.0]
++    take = client.take_notification
++    def poll(timeout=0):
++        now[0] += 60
++        return take(timeout=0)
++    monkeypatch.setattr(client, "take_notification", poll)
++    monkeypatch.setattr(session_mod.time, "monotonic", lambda: now[0])
++    result = make_session(client).run_turn("test", turn_timeout=1800, post_tool_quiet_timeout=90)
++    assert result.final_text == "done"
++    assert not result.interrupted and not result.should_retire
++    assert not any(method == "turn/interrupt" for method, _ in client.requests)
++
++
++@pytest.mark.parametrize("thread,delta", [("foreign", "more"), ("t", ""), ("t", "more")])
++def test_post_tool_watchdog_still_retires_when_progress_stops(monkeypatch, thread, delta):
++    client = FakeClient()
++    client.queue_notification("item/completed", threadId="t", turnId="tu1", item={
++        "type": "commandExecution", "id": "cmd", "command": "echo hi", "cwd": "/tmp",
++        "status": "completed", "aggregatedOutput": "hi", "exitCode": 0, "commandActions": [],
++    })
++    client.queue_notification("item/agentMessage/delta", threadId=thread, turnId="tu1", delta=delta)
++    now = [0.0]
++    take = client.take_notification
++    def poll(timeout=0):
++        now[0] += 60
++        return take(timeout=0)
++    monkeypatch.setattr(client, "take_notification", poll)
++    monkeypatch.setattr(session_mod.time, "monotonic", lambda: now[0])
++    result = make_session(client).run_turn("test", turn_timeout=1800, post_tool_quiet_timeout=90)
++    assert result.interrupted and result.should_retire and "silent" in result.error
++    assert now[0] <= (300 if thread == "t" and delta else 240)
++
++
+ # ---- choice mapping ----
+ 
+ class TestApprovalChoiceMapping:
+@@ -910,4 +959,3 @@ class TestClassifyOAuthFailure:
+         assert _classify_oauth_failure() is None
+         assert _classify_oauth_failure("") is None
+         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
+-
+diff --git a/tests/agent/transports/test_codex_event_projector.py b/tests/agent/transports/test_codex_event_projector.py
+index c9b23a13486..fef854c2552 100644
+--- a/tests/agent/transports/test_codex_event_projector.py
++++ b/tests/agent/transports/test_codex_event_projector.py
+@@ -202,7 +202,7 @@ class TestMcpToolCallProjection:
+         assert "error" in msgs[1]["content"]
+ 
+ 
+-class TestUserAndOpaqueProjection:
++class TestUserAndMetadataProjection:
+     def test_user_message_text_fragments_only(self) -> None:
+         item = {
+             "type": "userMessage", "id": "u1",
+@@ -219,15 +219,20 @@ class TestUserAndOpaqueProjection:
+         assert "hello" in msgs[0]["content"]
+         assert "world" in msgs[0]["content"]
+ 
+-    def test_opaque_item_recorded_without_fabricated_tool_calls(self) -> None:
+-        item = {"type": "plan", "id": "p1", "text": "do the thing"}
+-        msgs = CodexEventProjector().project(
+-            {"method": "item/completed", "params": {"item": item}}
+-        ).messages
+-        assert len(msgs) == 1
+-        assert msgs[0]["role"] == "assistant"
+-        assert "plan" in msgs[0]["content"].lower()
+-        assert "tool_calls" not in msgs[0]
++    @pytest.mark.parametrize("item_type", ["plan", "hookPrompt", "futureItem", ""])
++    def test_metadata_never_becomes_assistant_prose(self, item_type) -> None:
++        p = CodexEventProjector()
++        p.project({"method": "item/completed", "params": {"item": {
++            "type": "reasoning", "summary": ["thinking"], "content": []}}})
++        result = p.project({"method": "item/completed", "params": {"item": {
++            "type": item_type, "id": "metadata-1", "text": "internal event"}}})
++        assert result.messages == []
++        assert result.final_text is None
++        assert result.is_tool_iteration is False
++        final = p.project({"method": "item/completed", "params": {"item": {
++            "type": "agentMessage", "text": "The answer."}}})
++        assert final.messages == [{"role": "assistant", "content": "The answer.",
++                                   "reasoning": "thinking"}]
+ 
+ 
+ class TestHelpers:
+diff --git a/tests/run_agent/test_codex_app_server_integration.py b/tests/run_agent/test_codex_app_server_integration.py
+index 7b89fa48c39..cee9397f730 100644
+--- a/tests/run_agent/test_codex_app_server_integration.py
++++ b/tests/run_agent/test_codex_app_server_integration.py
+@@ -86,20 +86,37 @@ class TestRunConversationCodexPath:
+         assert result["codex_thread_id"] == "thread-stub-1"
+         assert result["codex_turn_id"] == "turn-stub-1"
+ 
+-    def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
++    @pytest.mark.parametrize(
++        "input_tokens,cached_tokens,output_tokens,reasoning_tokens,include_total",
++        [
++            (80, 20, 25, 5, True),
++            (27_291, 26_240, 713, 0, True),
++            (80, 0, 25, 5, False),
++            (80, 80, 25, 5, False),
++        ],
++    )
++    def test_codex_app_server_token_usage_updates_session_accounting(
++        self, monkeypatch, input_tokens, cached_tokens, output_tokens,
++        reasoning_tokens, include_total,
++    ):
++        # Codex input includes cache hits; output includes reasoning tokens.
++        total_tokens = input_tokens + output_tokens
++        usage = {
++            "inputTokens": input_tokens,
++            "cachedInputTokens": cached_tokens,
++            "outputTokens": output_tokens,
++            "reasoningOutputTokens": reasoning_tokens,
++        }
++        if include_total:
++            usage["totalTokens"] = total_tokens
++
+         def fake_run_turn(self, user_input: str, **kwargs):
+             return TurnResult(
+                 final_text="done",
+                 projected_messages=[{"role": "assistant", "content": "done"}],
+                 turn_id="turn-usage-1",
+                 thread_id="thread-usage-1",
+-                token_usage_last={
+-                    "totalTokens": 130,
+-                    "inputTokens": 80,
+-                    "cachedInputTokens": 20,
+-                    "outputTokens": 25,
+-                    "reasoningOutputTokens": 5,
+-                },
++                token_usage_last=usage,
+                 model_context_window=200000,
+             )
+ 
+@@ -112,28 +129,28 @@ class TestRunConversationCodexPath:
+             result = agent.run_conversation("hello")
+ 
+         assert result["api_calls"] == 1
+-        assert result["prompt_tokens"] == 100
+-        assert result["completion_tokens"] == 25
+-        assert result["total_tokens"] == 130
+-        assert result["input_tokens"] == 80
+-        assert result["output_tokens"] == 25
+-        assert result["cache_read_tokens"] == 20
++        assert result["prompt_tokens"] == input_tokens
++        assert result["completion_tokens"] == output_tokens
++        assert result["total_tokens"] == total_tokens
++        assert result["input_tokens"] == input_tokens - cached_tokens
++        assert result["output_tokens"] == output_tokens
++        assert result["cache_read_tokens"] == cached_tokens
+         assert result["cache_write_tokens"] == 0
+-        assert result["reasoning_tokens"] == 5
+-        assert result["last_prompt_tokens"] == 100
++        assert result["reasoning_tokens"] == reasoning_tokens
++        assert result["last_prompt_tokens"] == input_tokens
+ 
+         assert agent.session_api_calls == 1
+-        assert agent.session_prompt_tokens == 100
+-        assert agent.session_completion_tokens == 25
+-        assert agent.session_total_tokens == 130
+-        assert agent.session_input_tokens == 80
+-        assert agent.session_output_tokens == 25
+-        assert agent.session_cache_read_tokens == 20
++        assert agent.session_prompt_tokens == input_tokens
++        assert agent.session_completion_tokens == output_tokens
++        assert agent.session_total_tokens == total_tokens
++        assert agent.session_input_tokens == input_tokens - cached_tokens
++        assert agent.session_output_tokens == output_tokens
++        assert agent.session_cache_read_tokens == cached_tokens
+         assert agent.session_cache_write_tokens == 0
+-        assert agent.session_reasoning_tokens == 5
+-        assert agent.context_compressor.last_prompt_tokens == 100
+-        assert agent.context_compressor.last_completion_tokens == 25
+-        assert agent.context_compressor.last_total_tokens == 130
++        assert agent.session_reasoning_tokens == reasoning_tokens
++        assert agent.context_compressor.last_prompt_tokens == input_tokens
++        assert agent.context_compressor.last_completion_tokens == output_tokens
++        assert agent.context_compressor.last_total_tokens == total_tokens
+         assert agent.context_compressor.context_length == 200000
+ 
+     def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
+@@ -759,11 +776,11 @@ class TestCodexToolProgressBridge:
+         item/started note, calls the agent's tool_progress_callback."""
+         captured_init = {}
+         events = []
++        original_init = CodexAppServerSession.__init__
+ 
+         def fake_init(self, **kwargs):
+             captured_init.update(kwargs)
+-            # minimal attrs so the rest of run_turn stubs work
+-            self._client = None
++            original_init(self, **kwargs)
+ 
+         def fake_run_turn(self, user_input, **kwargs):
+             # Exercise the wired on_event hook with a real item/started note.
+diff --git a/tui_gateway/methods_prompt.py b/tui_gateway/methods_prompt.py
+index 07ad5fda8f6..74c2416e651 100644
+--- a/tui_gateway/methods_prompt.py
++++ b/tui_gateway/methods_prompt.py
+@@ -490,14 +490,14 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
+         _emit("session.info", sid, _session_info(session.get("agent"), session))
+         return
+     with session["history_lock"]:
+-        if session.get("_turn_cancel_requested") or not session.get("running"):
++        if session.get("_turn_cancel_requested"):
++            _cancel_unstarted_turn_locked(sid, session)
++            return
++        if not session.get("running"):
+             session["running"] = False
+             _clear_inflight_turn(session)
+             # Without this emit the turn vanishes silently after {"status": "streaming"}.
+-            _emit("error", sid, {"message": (
+-                "Turn cancelled before the agent was ready"
+-                if session.get("_turn_cancel_requested")
+-                else "Session no longer running before the agent was ready")})
++            _emit("error", sid, {"message": "Session no longer running before the agent was ready"})
+             return
+     _run_prompt_submit(
+         rid, sid, session, text, display_kind=display_kind,
+diff --git a/tui_gateway/prompt_turn.py b/tui_gateway/prompt_turn.py
+index a80e1579acd..c9060c6c427 100644
+--- a/tui_gateway/prompt_turn.py
++++ b/tui_gateway/prompt_turn.py
+@@ -79,6 +79,18 @@ def _plan_goal_compression_recovery(
+         "Run /compress, then /goal resume to continue.")
+ 
+ 
++def _cancel_unstarted_turn_locked(sid: str, session: dict) -> None:
++    """Settle a startup stop with the same terminal receipt as an interrupted model turn.
++    Caller holds history_lock, so admission cannot clear a stop between this check and reset."""
++    session["running"] = False
++    session["last_active"] = time.time()
++    _clear_inflight_turn(session)
++    _retire_turn_marker(session)
++    agent = session.get("agent")
++    _emit("message.complete", sid, {
++        "text": "", "status": "interrupted", "usage": _get_usage(agent) if agent is not None else {}})
++
++
+ def _admit_prompt_turn(
+     sid: str, session: dict, text: Any, image_paths: list[str] | None,
+     queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+@@ -96,6 +108,9 @@ def _admit_prompt_turn(
+         _emit("error", sid, {"message": str(ownership_refusal)})
+         return None
+     with session["history_lock"]:
++        if session.get("_turn_cancel_requested"):
++            _cancel_unstarted_turn_locked(sid, session)
++            return None
+         if session.get("_closing") or (
+             queued_prompt_generation is not None
+             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
+diff --git a/plugins/platforms/telegram/idle_session.py b/plugins/platforms/telegram/idle_session.py
+new file mode 100644
+index 00000000000..dd65fc7b7c8
+--- /dev/null
++++ b/plugins/platforms/telegram/idle_session.py
+@@ -0,0 +1,172 @@
++"""An opt-in, owner-bound /new shortcut after an idle conversational reply."""
++from __future__ import annotations
++
++import asyncio
++from dataclasses import dataclass
++from datetime import datetime
++import logging
++import secrets
++
++from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
++
++logger = logging.getLogger(__name__)
++
++
++@dataclass
++class IdleReply:
++    event: MessageEvent
++    message_id: str = ""
++    token: str = ""
++    shown: bool = False
++    task: asyncio.Task | None = None
++
++
++class TelegramIdleSessionMixin:
++    def _idle_session_seconds(self):
++        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
++        minutes = extra.get("new_session_suggestion_minutes", 0)
++        return minutes * 60 if type(minutes) is int and 1 <= minutes <= 1440 else 0
++
++    def _idle_replies(self):
++        if not hasattr(self, "_telegram_idle_replies"):
++            self._telegram_idle_replies = {}
++            self._telegram_latest_inbound = {}
++        return self._telegram_idle_replies
++
++    @staticmethod
++    def _idle_route(chat_id, thread_id=None):
++        return str(chat_id), str(thread_id or "")
++
++    def _idle_event_allowed(self, event):
++        source = event.source
++        return (self._idle_session_seconds() > 0 and not event.internal
++                and source.chat_type in ("private", "dm")
++                and self._is_sender_authorized(source.user_id, source.chat_type,
++                                              source.chat_id, thread_id=source.thread_id) is True)
++
++    async def _clear_idle_reply(self, route):
++        reply = self._idle_replies().pop(route, None)
++        if reply is None:
++            return
++        if reply.task and reply.task is not asyncio.current_task():
++            reply.task.cancel()
++        if reply.shown and self._bot:
++            try:
++                await self._bot.edit_message_reply_markup(chat_id=route[0],
++                                                         message_id=int(reply.message_id), reply_markup=None)
++            except Exception as exc:
++                logger.debug("Idle session keyboard removal failed: %s", type(exc).__name__)
++
++    async def handle_message(self, event):
++        if self._idle_event_allowed(event):
++            route = self._idle_route(event.source.chat_id, event.source.thread_id)
++            self._idle_replies()
++            self._telegram_latest_inbound[route[0]] = event
++            # Activity anywhere in this DM clears older suggestions, including
++            # clients whose topic ID will only be recovered by the base adapter.
++            for previous_route in list(self._idle_replies()):
++                if previous_route[0] == route[0]:
++                    await self._clear_idle_reply(previous_route)
++        return await super().handle_message(event)
++
++    async def _idle_processing_start(self, event):
++        if not self._idle_event_allowed(event):
++            return
++        route = self._idle_route(event.source.chat_id, event.source.thread_id)
++        self._idle_replies()
++        await self._clear_idle_reply(route)
++        if not event.get_command():
++            self._idle_replies()[route] = IdleReply(event)
++            self._telegram_latest_inbound.setdefault(route[0], event)
++
++    def _remember_idle_message(self, chat_id, metadata, result):
++        if not self._idle_session_seconds() or not result.success or not result.message_id:
++            return
++        route = self._idle_route(chat_id, self._metadata_thread_id(metadata))
++        reply = self._idle_replies().get(route)
++        if reply is not None:
++            ids = (result.raw_response or {}).get("message_ids") if isinstance(result.raw_response, dict) else None
++            reply.message_id = str(ids[-1] if ids else result.message_id)
++
++    async def send(self, chat_id, content, reply_to=None, metadata=None):
++        result = await self._send_telegram_text(chat_id, content, reply_to, metadata)
++        self._remember_idle_message(chat_id, metadata, result)
++        return result
++
++    async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
++        result = await self._edit_telegram_message(chat_id, message_id, content, finalize=finalize, metadata=metadata)
++        self._remember_idle_message(chat_id, metadata, result)
++        return result
++
++    async def _idle_processing_complete(self, event, outcome):
++        if not self._idle_event_allowed(event) or event.get_command():
++            return
++        route = self._idle_route(event.source.chat_id, event.source.thread_id)
++        reply = self._idle_replies().get(route)
++        if reply is None or reply.event is not event:
++            return
++        if (outcome != ProcessingOutcome.SUCCESS or not reply.message_id
++                or self._telegram_latest_inbound.get(route[0]) is not event):
++            await self._clear_idle_reply(route)
++            return
++        reply.token = secrets.token_urlsafe(12)
++        reply.task = asyncio.create_task(self._show_idle_new_button(route, reply))
++
++    async def _show_idle_new_button(self, route, reply):
++        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
++        await asyncio.sleep(self._idle_session_seconds())
++        if (self._idle_replies().get(route) is not reply
++                or self._telegram_latest_inbound.get(route[0]) is not reply.event
++                or self._event_session_key(reply.event) in self._active_sessions or not self._bot):
++            return
++        try:
++            # Mark before the RPC so fresh input also removes an in-flight keyboard.
++            reply.shown = True
++            await self._bot.edit_message_reply_markup(
++                chat_id=route[0], message_id=int(reply.message_id),
++                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
++                    "🆕 Neue Sitzung (/new)", callback_data="ns:" + reply.token)]]))
++            if self._idle_replies().get(route) is not reply:
++                await self._bot.edit_message_reply_markup(
++                    chat_id=route[0], message_id=int(reply.message_id), reply_markup=None)
++        except Exception as exc:
++            reply.shown = False
++            logger.warning("Idle session suggestion failed: %s", type(exc).__name__)
++
++    async def _handle_idle_session_callback(self, query, data, cb):
++        if not await self._callback_authorized(query, cb, "Dieser Knopf gehört nicht zu deiner Sitzung."):
++            return
++        route = self._idle_route(cb["chat_id"], cb["thread_id"])
++        reply = self._idle_replies().get(route)
++        if (not reply or not reply.shown or data != "ns:" + reply.token
++                or str(query.from_user.id) != str(reply.event.source.user_id)
++                or str(query.message.message_id) != reply.message_id):
++            await query.answer(text="Dieser Vorschlag ist nicht mehr aktiv. Du kannst /new schreiben.")
++            return
++        if self._event_session_key(reply.event) in self._active_sessions:
++            await query.answer(text="Die Bearbeitung läuft noch. Bitte danach eine neue Sitzung starten.")
++            return
++        # Claim before any await: a repeated tap cannot reset a second, newer session.
++        self._idle_replies().pop(route)
++        await query.answer(text="Neue Sitzung wird gestartet.")
++        try:
++            await query.edit_message_reply_markup(reply_markup=None)
++        except Exception as exc:
++            logger.debug("Idle session keyboard removal failed: %s", type(exc).__name__)
++        # A fresh message during the callback RPCs belongs to newer context.
++        if (self._telegram_latest_inbound.get(route[0]) is not reply.event
++                or self._event_session_key(reply.event) in self._active_sessions):
++            return
++        command = MessageEvent(text="/new", message_type=MessageType.COMMAND, source=reply.event.source,
++                               message_id=str(query.message.message_id), timestamp=datetime.now(),
++                               metadata={"gateway_session_key": self._event_session_key(reply.event)})
++        await self.handle_message(command)
++
++    async def _cancel_idle_session_tasks(self):
++        tasks = [r.task for r in self._idle_replies().values() if r.task and not r.task.done()]
++        for task in tasks:
++            task.cancel()
++        if tasks:
++            await asyncio.gather(*tasks, return_exceptions=True)
++        self._idle_replies().clear()
++        self._telegram_latest_inbound.clear()
+diff --git a/tests/agent/test_codex_early_interrupt.py b/tests/agent/test_codex_early_interrupt.py
+new file mode 100644
+index 00000000000..0f5b730484a
+--- /dev/null
++++ b/tests/agent/test_codex_early_interrupt.py
+@@ -0,0 +1,106 @@
++"""Hermes interrupts must cross lazy Codex-session creation without running a prompt."""
++
++import threading
++
++import pytest
++
++from agent import codex_runtime
++from agent.interrupt_control import InterruptControlMixin
++from agent.transports import codex_app_server_session as transport
++
++
++class RecordingClient:
++    def __init__(self):
++        self.requests = []
++        self.notes = []
++
++    def initialize(self, **kwargs):
++        return {}
++
++    def request(self, method, params, **kwargs):
++        self.requests.append((method, params))
++        if method == "thread/start":
++            return {"thread": {"id": "thread"}}
++        if method == "turn/start":
++            self.notes = [{"method": "turn/completed", "params": {
++                "threadId": "thread", "turn": {"id": "turn", "status": "completed"}}}]
++            return {"turn": {"id": "turn"}}
++        return {}
++
++    def take_notification(self, **kwargs):
++        return self.notes.pop(0) if self.notes else None
++
++    def take_server_request(self, **kwargs):
++        return None
++
++    def is_alive(self):
++        return True
++
++    def stderr_tail(self, *args):
++        return []
++
++    def close(self):
++        pass
++
++
++class TestAgent(InterruptControlMixin):
++    __test__ = False
++
++    def __init__(self, cwd):
++        self.api_mode = "codex_app_server"
++        self._codex_session = None
++        self._interrupt_requested = False
++        self._hard_interrupt_requested = threading.Event()
++        self._execution_thread_id = None
++        self._active_children_lock = threading.Lock()
++        self._active_children = []
++        self.quiet_mode = True
++        self._session_db = None
++        self.session_id = "early-codex-stop"
++        self.session_cwd = str(cwd)
++        self._skill_nudge_interval = 0
++        self.valid_tool_names = set()
++        self.model = "test"
++        self.provider = "openai-codex"
++        self.base_url = ""
++        self.session_api_calls = 0
++
++
++def run(agent, text):
++    return codex_runtime.run_codex_app_server_turn(
++        agent, user_message=text, original_user_message=text,
++        messages=[{"role": "user", "content": text}], effective_task_id="test")
++
++
++@pytest.mark.parametrize("stop_at", ["before_creation", "during_creation", "during_initialize"])
++def test_hard_stop_prevents_first_turn_and_does_not_poison_next_turn(tmp_path, monkeypatch, stop_at):
++    agent = TestAgent(tmp_path)
++    client = RecordingClient()
++    monkeypatch.setattr(transport, "CodexAppServerClient", lambda **kw: client)
++    if stop_at == "before_creation":
++        agent.hard_interrupt()
++    elif stop_at == "during_creation":
++        # _load_codex_thread_id executes while the constructor args are being
++        # evaluated, before the new session is published on the agent.
++        def load_thread(_agent):
++            agent.hard_interrupt()
++            return None
++        monkeypatch.setattr(codex_runtime, "_load_codex_thread_id", load_thread)
++    else:
++        def initialize(**kwargs):
++            agent.hard_interrupt()
++            return {}
++        client.initialize = initialize
++    try:
++        result = run(agent, "must not be submitted")
++        assert result["interrupted"] is True
++        assert result["completed"] is False
++        assert not any(method == "turn/start" for method, _ in client.requests)
++        assert agent._interrupt_requested is False
++        assert not agent._hard_interrupt_requested.is_set()
++        assert run(agent, "explicit later request")["completed"] is True
++        assert [params["input"][0]["text"] for method, params in client.requests if method == "turn/start"] == [
++            "explicit later request"]
++    finally:
++        if agent._codex_session:
++            agent._codex_session.close()
+diff --git a/tests/gateway/test_telegram_idle_session.py b/tests/gateway/test_telegram_idle_session.py
+new file mode 100644
+index 00000000000..f8ddd2179b6
+--- /dev/null
++++ b/tests/gateway/test_telegram_idle_session.py
+@@ -0,0 +1,169 @@
++"""Idle /new shortcuts follow delivered replies and cannot reset newer context."""
++import asyncio
++from dataclasses import replace
++import sys
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from gateway.config import Platform, PlatformConfig
++from gateway.platforms.event import MessageEvent
++from gateway.session import SessionSource
++from plugins.platforms.telegram import idle_session
++from plugins.platforms.telegram.adapter import TelegramAdapter, _apply_yaml_config
++
++
++@pytest.fixture
++def idle_adapter(monkeypatch):
++    # The shared gateway conftest installs generic telegram stubs. Exercise the
++    # actual keyboard objects/serialization when the connector SDK is installed.
++    for name in list(sys.modules):
++        if name == "telegram" or name.startswith("telegram."):
++            monkeypatch.delitem(sys.modules, name)
++    pytest.importorskip("telegram")
++    clock = SimpleNamespace(started=asyncio.Event(), release=asyncio.Event(), delays=[])
++
++    async def sleep(seconds):
++        clock.delays.append(seconds)
++        clock.started.set()
++        await clock.release.wait()
++
++    # Only the suggestion timer uses the fake clock; gateway tasks keep real asyncio.
++    monkeypatch.setattr(idle_session, "asyncio", SimpleNamespace(
++        sleep=sleep, create_task=asyncio.create_task, current_task=asyncio.current_task, gather=asyncio.gather))
++    extra = _apply_yaml_config({}, {"extra": {"new_session_suggestion_minutes": 20, "rich_messages": False}})
++    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token", extra=extra))
++    adapter.set_authorization_check(lambda user, *args, **kwargs: user in ("42", "43"))
++    adapter._bot = AsyncMock()
++    ids = iter(range(500, 600))
++    adapter._bot.send_message.side_effect = lambda **kwargs: SimpleNamespace(message_id=next(ids))
++    adapter._start_typing_refresh = lambda *args: None
++    adapter._stop_typing_refresh = AsyncMock()
++    adapter.commands_seen = []
++
++    async def handler(event):
++        adapter.commands_seen.append(event.get_command())
++        return "Antwort " * 800  # Exercise split delivery: button belongs on the last fragment.
++
++    adapter.set_message_handler(handler)
++    event = MessageEvent(text="Hilf mir", message_id="100", source=SessionSource(
++        platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", user_id="42", thread_id="77"))
++    return adapter, clock, event
++
++
++async def process(adapter, event):
++    await adapter.handle_message(event)
++    task = adapter._session_tasks.get(adapter._event_session_key(event))
++    if task:
++        await task
++
++
++async def show_button(adapter, clock, event):
++    await process(adapter, event)
++    await asyncio.wait_for(clock.started.wait(), 5)
++    reply = adapter._idle_replies()[("123", "77")]
++    assert clock.delays == [20 * 60]
++    adapter._bot.edit_message_reply_markup.assert_not_awaited()
++    sends = adapter._bot.send_message.await_count
++    clock.release.set()
++    await reply.task
++    assert adapter._bot.send_message.await_count == sends
++    markup = adapter._bot.edit_message_reply_markup.await_args.kwargs
++    assert str(markup["message_id"]) == reply.message_id
++    assert markup["reply_markup"].inline_keyboard[0][0].callback_data == "ns:" + reply.token
++    return reply
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("case", ["split", "streamed", "input_before", "input_after", "recovered_topic", "failed", "disabled", "internal", "unauthorized"])
++async def test_suggestion_follows_only_the_latest_successful_reply(idle_adapter, case):
++    adapter, clock, event = idle_adapter
++    try:
++        if case == "disabled":
++            adapter.config.extra.pop("new_session_suggestion_minutes")
++        elif case == "internal":
++            event = replace(event, internal=True)
++        elif case == "unauthorized":
++            event = replace(event, source=replace(event.source, user_id="99"))
++        elif case == "failed":
++            adapter.set_message_handler(AsyncMock(side_effect=RuntimeError("turn failed")))
++        elif case == "streamed":
++            async def streamed(inbound):
++                metadata = {"thread_id": "77"}
++                sent = await adapter.send("123", "Entwurf", metadata=metadata)
++                await adapter.edit_message("123", sent.message_id, "Fertige Antwort", finalize=True, metadata=metadata)
++                return None
++            adapter.set_message_handler(streamed)
++
++        if case in ("failed", "disabled", "internal", "unauthorized"):
++            await process(adapter, event)
++            assert not clock.started.is_set()
++            adapter._bot.edit_message_reply_markup.assert_not_awaited()
++        elif case == "input_before":
++            await process(adapter, event)
++            await asyncio.wait_for(clock.started.wait(), 5)
++            old = adapter._idle_replies()[("123", "77")]
++            await process(adapter, replace(event, message_id="101", text="Weiter"))
++            await asyncio.gather(old.task, return_exceptions=True)
++            assert old.task.cancelled()
++            adapter._bot.edit_message_reply_markup.assert_not_awaited()
++        else:
++            reply = await show_button(adapter, clock, event)
++            if case == "split":
++                assert int(reply.message_id) > 500
++            if case in ("input_after", "recovered_topic"):
++                source = event.source
++                if case == "recovered_topic":
++                    source = replace(source, thread_id=None)
++                    adapter._topic_recovery_fn = object()
++                    adapter._apply_topic_recovery = lambda incoming: setattr(incoming.source, "thread_id", "77")
++                await process(adapter, replace(event, source=source, message_id="101", text="Weiter"))
++                calls = adapter._bot.edit_message_reply_markup.await_args_list
++                assert any(c.kwargs["message_id"] == int(reply.message_id)
++                           and c.kwargs["reply_markup"] is None for c in calls)
++    finally:
++        await adapter._cancel_idle_session_tasks()
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("case", ["owner", "duplicate", "outsider", "stale", "wrong_message", "wrong_topic", "busy", "new_input_during_ack"])
++async def test_callback_is_owner_bound_and_never_resets_newer_context(idle_adapter, case):
++    adapter, clock, event = idle_adapter
++    try:
++        reply = await show_button(adapter, clock, event)
++        query = SimpleNamespace(
++            data="ns:" + reply.token,
++            from_user=SimpleNamespace(id=43 if case == "outsider" else 42, first_name="User"),
++            message=SimpleNamespace(chat_id=123, message_id=int(reply.message_id), message_thread_id=77,
++                                    chat=SimpleNamespace(type="private")),
++            answer=AsyncMock(), edit_message_reply_markup=AsyncMock())
++        if case == "stale":
++            await process(adapter, replace(event, message_id="101", text="Weiter"))
++        elif case == "wrong_message":
++            query.message.message_id += 1
++        elif case == "wrong_topic":
++            query.message.message_thread_id = 88
++        elif case == "busy":
++            adapter._active_sessions[adapter._event_session_key(event)] = asyncio.Event()
++        elif case == "new_input_during_ack":
++            async def fresh_input(**kwargs):
++                await process(adapter, replace(event, message_id="101", text="Weiter"))
++            query.answer.side_effect = fresh_input
++
++        update = SimpleNamespace(callback_query=query)
++        if case in ("owner", "duplicate"):
++            # A known callback route must not yield to topic recovery and race
++            # a new input before admitting its /new command.
++            adapter._topic_recovery_fn = object()
++            adapter._apply_topic_recovery = lambda incoming: pytest.fail("callback route was already resolved")
++        await adapter._handle_callback_query(update, None)
++        if case == "duplicate":
++            await adapter._handle_callback_query(update, None)
++        for task in list(adapter._session_tasks.values()):
++            await task
++        assert adapter.commands_seen.count("new") == (1 if case in ("owner", "duplicate") else 0)
++        query.answer.assert_awaited()
++    finally:
++        await adapter._cancel_idle_session_tasks()
++        adapter._active_sessions.clear()
+diff --git a/tests/tui_gateway/test_early_turn_cancellation.py b/tests/tui_gateway/test_early_turn_cancellation.py
+new file mode 100644
+index 00000000000..a7fdae93e79
+--- /dev/null
++++ b/tests/tui_gateway/test_early_turn_cancellation.py
+@@ -0,0 +1,56 @@
++"""A stop acknowledged during startup must not become a new model turn."""
++
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from tui_gateway import server
++
++
++@pytest.fixture
++def stopped_session(monkeypatch):
++    events = []
++    agent = SimpleNamespace(_interrupt_requested=False, model="test")
++    agent.hard_interrupt = lambda: setattr(agent, "_interrupt_requested", True)
++    agent.clear_interrupt = lambda: setattr(agent, "_interrupt_requested", False)
++    session = {
++        "agent": agent, "session_key": "early-stop", "history_lock": threading.Lock(),
++        "running": True, "history": [], "attached_images": [],
++        "inflight_turn": {"user": "do not execute this cancelled turn"},
++        "_run_thread": SimpleNamespace(is_alive=lambda: True),
++    }
++    monkeypatch.setattr(server, "_emit", lambda kind, sid, payload=None: events.append((kind, payload)))
++    monkeypatch.setattr(server, "_session_uses_compute_host", lambda session, *a: False)
++    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
++    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
++    server._interrupt_session_turn("ui-stop", session)
++    assert agent._interrupt_requested is True
++    return session, events
++
++
++def assert_cancelled(session, events):
++    complete = [payload for kind, payload in events if kind == "message.complete"]
++    assert len(complete) == 1
++    assert complete[0]["status"] == "interrupted"
++    assert session["running"] is False
++    assert session["inflight_turn"] is None
++
++
++def test_stop_between_ready_check_and_admission_is_not_cleared(stopped_session):
++    session, events = stopped_session
++    admitted = server._admit_prompt_turn("ui-stop", session, "do not run", None, None)
++    assert admitted is None
++    assert session["agent"]._interrupt_requested is True
++    assert_cancelled(session, events)
++
++
++@pytest.mark.parametrize("has_agent", [False, True])
++def test_stop_during_agent_build_has_terminal_interrupted_receipt(stopped_session, monkeypatch, has_agent):
++    session, events = stopped_session
++    if not has_agent:
++        session["agent"] = None
++    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *a: None)
++    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: pytest.fail("cancelled turn was started"))
++    server._run_after_agent_ready("request", "ui-stop", session, "do not run", None, None)
++    assert_cancelled(session, events)

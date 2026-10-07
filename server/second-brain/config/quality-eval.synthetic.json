@@ -1,0 +1,1259 @@
+{
+  "version": 1,
+  "scope": "synthetic_regression",
+  "description": "60 controlled synthetic regression cases, not a reviewed benchmark of personal memory. Held-out entity groups must remain separate from development groups. No import into production.",
+  "documents": [
+    {
+      "id": "fixture:atlas:old",
+      "text": "Projekt Atlas: Am 2026-01-01 war Robin verantwortlich. Budget: 100 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:atlas:current",
+      "text": "Projekt Atlas: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 200 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:atlas:code",
+      "text": "Projekt Atlas: Die Funktion parse_atlas_config ist in src/atlas/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:atlas:claim-a",
+      "text": "Projekt Atlas: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:atlas:claim-b",
+      "text": "Projekt Atlas: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:birke:old",
+      "text": "Projekt Birke: Am 2026-01-01 war Robin verantwortlich. Budget: 101 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:birke:current",
+      "text": "Projekt Birke: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 201 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:birke:code",
+      "text": "Projekt Birke: Die Funktion parse_birke_config ist in src/birke/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:birke:claim-a",
+      "text": "Projekt Birke: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:birke:claim-b",
+      "text": "Projekt Birke: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:cedar:old",
+      "text": "Projekt Cedar: Am 2026-01-01 war Robin verantwortlich. Budget: 102 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:cedar:current",
+      "text": "Projekt Cedar: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 202 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:cedar:code",
+      "text": "Projekt Cedar: Die Funktion parse_cedar_config ist in src/cedar/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:cedar:claim-a",
+      "text": "Projekt Cedar: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:cedar:claim-b",
+      "text": "Projekt Cedar: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:delta:old",
+      "text": "Projekt Delta: Am 2026-01-01 war Robin verantwortlich. Budget: 103 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:delta:current",
+      "text": "Projekt Delta: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 203 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:delta:code",
+      "text": "Projekt Delta: Die Funktion parse_delta_config ist in src/delta/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:delta:claim-a",
+      "text": "Projekt Delta: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:delta:claim-b",
+      "text": "Projekt Delta: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:echo:old",
+      "text": "Projekt Echo: Am 2026-01-01 war Robin verantwortlich. Budget: 104 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:echo:current",
+      "text": "Projekt Echo: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 204 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:echo:code",
+      "text": "Projekt Echo: Die Funktion parse_echo_config ist in src/echo/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:echo:claim-a",
+      "text": "Projekt Echo: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:echo:claim-b",
+      "text": "Projekt Echo: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:fjord:old",
+      "text": "Projekt Fjord: Am 2026-01-01 war Robin verantwortlich. Budget: 105 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:fjord:current",
+      "text": "Projekt Fjord: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 205 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:fjord:code",
+      "text": "Projekt Fjord: Die Funktion parse_fjord_config ist in src/fjord/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:fjord:claim-a",
+      "text": "Projekt Fjord: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:fjord:claim-b",
+      "text": "Projekt Fjord: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:ginkgo:old",
+      "text": "Projekt Ginkgo: Am 2026-01-01 war Robin verantwortlich. Budget: 106 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:ginkgo:current",
+      "text": "Projekt Ginkgo: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 206 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:ginkgo:code",
+      "text": "Projekt Ginkgo: Die Funktion parse_ginkgo_config ist in src/ginkgo/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:ginkgo:claim-a",
+      "text": "Projekt Ginkgo: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:ginkgo:claim-b",
+      "text": "Projekt Ginkgo: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:hafen:old",
+      "text": "Projekt Hafen: Am 2026-01-01 war Robin verantwortlich. Budget: 107 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:hafen:current",
+      "text": "Projekt Hafen: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 207 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:hafen:code",
+      "text": "Projekt Hafen: Die Funktion parse_hafen_config ist in src/hafen/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:hafen:claim-a",
+      "text": "Projekt Hafen: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:hafen:claim-b",
+      "text": "Projekt Hafen: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:iris:old",
+      "text": "Projekt Iris: Am 2026-01-01 war Robin verantwortlich. Budget: 108 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:iris:current",
+      "text": "Projekt Iris: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 208 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:iris:code",
+      "text": "Projekt Iris: Die Funktion parse_iris_config ist in src/iris/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:iris:claim-a",
+      "text": "Projekt Iris: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:iris:claim-b",
+      "text": "Projekt Iris: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:jade:old",
+      "text": "Projekt Jade: Am 2026-01-01 war Robin verantwortlich. Budget: 109 Euro. Diese Regelung wurde am 2026-02-01 ersetzt.",
+      "source_date": "2026-01-01",
+      "evidence_status": "superseded",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:jade:current",
+      "text": "Projekt Jade: Seit 2026-02-01 ist Alex verantwortlich. Das aktuelle Budget betraegt 209 Euro. Diese Entscheidung ersetzt die fruehere Zuweisung an Robin.",
+      "source_date": "2026-02-01",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:jade:code",
+      "text": "Projekt Jade: Die Funktion parse_jade_config ist in src/jade/parser.py implementiert.",
+      "source_date": "2026-02-02",
+      "evidence_status": "confirmed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:jade:claim-a",
+      "text": "Projekt Jade: Notiz A vom 2026-02-03 nennt Wien als Standort. Die Frage ist strittig.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    },
+    {
+      "id": "fixture:jade:claim-b",
+      "text": "Projekt Jade: Notiz B vom 2026-02-03 nennt Graz als Standort. Es gibt keine abschliessende Entscheidung.",
+      "source_date": "2026-02-03",
+      "evidence_status": "disputed",
+      "source_version": "fixture-v1"
+    }
+  ],
+  "cases": [
+    {
+      "id": "atlas-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_atlas_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:atlas:code"
+      ],
+      "accepted_answers": [
+        "src/atlas/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "atlas-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Atlas verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:atlas:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "atlas-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Atlas verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:atlas:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "atlas-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Atlas erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:atlas:old",
+        "fixture:atlas:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "atlas-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Atlas vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:atlas:claim-a",
+        "fixture:atlas:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "atlas-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Atlas?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "birke-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_birke_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:birke:code"
+      ],
+      "accepted_answers": [
+        "src/birke/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "birke-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Birke verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:birke:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "birke-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Birke verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:birke:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "birke-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Birke erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:birke:old",
+        "fixture:birke:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "birke-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Birke vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:birke:claim-a",
+        "fixture:birke:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "birke-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Birke?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "cedar-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_cedar_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:cedar:code"
+      ],
+      "accepted_answers": [
+        "src/cedar/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "cedar-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Cedar verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:cedar:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "cedar-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Cedar verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:cedar:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "cedar-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Cedar erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:cedar:old",
+        "fixture:cedar:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "cedar-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Cedar vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:cedar:claim-a",
+        "fixture:cedar:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "cedar-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Cedar?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "delta-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_delta_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:delta:code"
+      ],
+      "accepted_answers": [
+        "src/delta/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "delta-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Delta verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:delta:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "delta-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Delta verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:delta:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "delta-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Delta erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:delta:old",
+        "fixture:delta:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "delta-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Delta vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:delta:claim-a",
+        "fixture:delta:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "delta-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Delta?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "echo-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_echo_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:echo:code"
+      ],
+      "accepted_answers": [
+        "src/echo/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "echo-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Echo verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:echo:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "echo-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Echo verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:echo:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "echo-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Echo erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:echo:old",
+        "fixture:echo:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "echo-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Echo vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:echo:claim-a",
+        "fixture:echo:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "echo-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Echo?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "fjord-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_fjord_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:fjord:code"
+      ],
+      "accepted_answers": [
+        "src/fjord/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "fjord-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Fjord verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:fjord:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "fjord-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Fjord verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:fjord:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "fjord-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Fjord erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:fjord:old",
+        "fixture:fjord:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "fjord-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Fjord vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:fjord:claim-a",
+        "fixture:fjord:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "fjord-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Fjord?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "ginkgo-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_ginkgo_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:ginkgo:code"
+      ],
+      "accepted_answers": [
+        "src/ginkgo/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "ginkgo-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Ginkgo verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:ginkgo:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "ginkgo-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Ginkgo verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:ginkgo:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "ginkgo-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Ginkgo erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:ginkgo:old",
+        "fixture:ginkgo:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "ginkgo-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Ginkgo vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:ginkgo:claim-a",
+        "fixture:ginkgo:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "ginkgo-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Ginkgo?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "hafen-exact",
+      "category": "exact",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_hafen_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:hafen:code"
+      ],
+      "accepted_answers": [
+        "src/hafen/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "hafen-correction",
+      "category": "correction",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Hafen verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:hafen:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "hafen-temporal",
+      "category": "temporal",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Hafen verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:hafen:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "hafen-multi_session",
+      "category": "multi_session",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Hafen erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:hafen:old",
+        "fixture:hafen:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "hafen-conflict",
+      "category": "conflict",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Hafen vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:hafen:claim-a",
+        "fixture:hafen:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "hafen-unanswerable",
+      "category": "unanswerable",
+      "split": "development",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Hafen?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "iris-exact",
+      "category": "exact",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_iris_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:iris:code"
+      ],
+      "accepted_answers": [
+        "src/iris/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "iris-correction",
+      "category": "correction",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Iris verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:iris:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "iris-temporal",
+      "category": "temporal",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Iris verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:iris:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "iris-multi_session",
+      "category": "multi_session",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Iris erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:iris:old",
+        "fixture:iris:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "iris-conflict",
+      "category": "conflict",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Iris vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:iris:claim-a",
+        "fixture:iris:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "iris-unanswerable",
+      "category": "unanswerable",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Iris?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "jade-exact",
+      "category": "exact",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Wo liegt die Funktion parse_jade_config?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:jade:code"
+      ],
+      "accepted_answers": [
+        "src/jade/parser.py"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "jade-correction",
+      "category": "correction",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Wer ist aktuell fuer Projekt Jade verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:jade:current"
+      ],
+      "accepted_answers": [
+        "Alex"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "jade-temporal",
+      "category": "temporal",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Wer war am 2026-01-15 fuer Projekt Jade verantwortlich?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:jade:old"
+      ],
+      "accepted_answers": [
+        "Robin"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "jade-multi_session",
+      "category": "multi_session",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Um wie viel Euro wurde das Budget von Projekt Jade erhoeht?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:jade:old",
+        "fixture:jade:current"
+      ],
+      "accepted_answers": [
+        "100 Euro",
+        "100"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "jade-conflict",
+      "category": "conflict",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Welche zwei widerspruechlichen Standorte sind fuer Projekt Jade vermerkt?",
+      "answerable": true,
+      "expected_all": [
+        "fixture:jade:claim-a",
+        "fixture:jade:claim-b"
+      ],
+      "accepted_answers": [
+        "Wien und Graz",
+        "Graz und Wien"
+      ],
+      "label_status": "generated_fixture"
+    },
+    {
+      "id": "jade-unanswerable",
+      "category": "unanswerable",
+      "split": "held_out",
+      "namespace": "brain",
+      "query": "Welche private Telefonnummer hat die verantwortliche Person von Projekt Jade?",
+      "answerable": false,
+      "expected_all": [],
+      "accepted_answers": [],
+      "label_status": "generated_fixture"
+    }
+  ]
+}

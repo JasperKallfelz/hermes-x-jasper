@@ -1,0 +1,1182 @@
+[
+  {
+    "sha256": "85c1b5fdc6bd495657bcaeb7169e3de9fc357e1743952d78b4f2093fee934809",
+    "path": "README.md"
+  },
+  {
+    "sha256": "90f58efb1fbc61635642da669a18c900cc5bb09baccd5545f4c9f22ccab0d126",
+    "path": "config.example.yaml"
+  },
+  {
+    "sha256": "f012b969ca6c5607a5bbf2c6432130379346dece4a5fde03e50934f874b380ae",
+    "path": "examples/openviking.example.json"
+  },
+  {
+    "sha256": "495d75de407f034de263bd8397178988407c6cf11044cdd91d62e132e53c7006",
+    "path": "operations/jarvis_style_tts.py"
+  },
+  {
+    "sha256": "c8674317f284dda48a717128fe96b36760ba6065c16124acf49d4b7a4a7fb67b",
+    "path": "operations/parakeet_stt_limited.py"
+  },
+  {
+    "sha256": "f7e10efb24f56e2e7c0131a62df877035d9f43d80ce565610b01ad3d7cd05967",
+    "path": "operations/prune_cron_outputs.py"
+  },
+  {
+    "sha256": "d3067af97b9e09e00fd606a74bcd09e35048ba3ceb20b728302d549bda8f01cc",
+    "path": "plugins/hermes-auto-titler/CHANGELOG.md"
+  },
+  {
+    "sha256": "5f569eb3df01049b9a10256d91576211a81f0d1b1c0de724a3dfaeec18babf23",
+    "path": "plugins/hermes-auto-titler/DESIGN.md"
+  },
+  {
+    "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a",
+    "path": "plugins/hermes-auto-titler/LICENSE"
+  },
+  {
+    "sha256": "ba1f26e9d7280e6c9ac5560dac5ecad7236299d06d28a4d2724a36cd3b1b50e4",
+    "path": "plugins/hermes-auto-titler/README.md"
+  },
+  {
+    "sha256": "e7ea6dcd78b26355d3536291e892d556bd39fb2fcf810fd9308364e9ede53130",
+    "path": "plugins/hermes-auto-titler/README.zh-CN.md"
+  },
+  {
+    "sha256": "3ef977238029e3f494b7fd39056642e9e524cc340fa444cc474ef2d3f7a4f9a9",
+    "path": "plugins/hermes-auto-titler/__init__.py"
+  },
+  {
+    "sha256": "43ed394d7518b1da0dd291c5d92015af4cd6f6c72b66a69726033a4e3991d0a9",
+    "path": "plugins/hermes-auto-titler/docs/longrun_title_evolution_report.md"
+  },
+  {
+    "sha256": "37360e4632398f7f5f7167187e62a7aa62bdeab5701d0a717ab834a1d51f98ce",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/__init__.py"
+  },
+  {
+    "sha256": "7a9ef0c95222a469ac2f1b2d414d73ffaec7bba42ff214e6d9af5b0e73ef90b3",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/commands.py"
+  },
+  {
+    "sha256": "6312af8beae314f60a4cb299086363e167df1e9f79d8af460ad0e465107f3c99",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/config.py"
+  },
+  {
+    "sha256": "73d9d16c221025cadf93cea0645c962e48e791d3963b7a312a13c4a999f51209",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/messages.py"
+  },
+  {
+    "sha256": "f79f02010e002219cc08f4e5bb225d717a518f861cdf3f246b3d223ec2d5f9c7",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/policy.py"
+  },
+  {
+    "sha256": "d8adcea074f60c049700cd1bb3a9d299b52099227edca63e14eb80d1f18287f7",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/state.py"
+  },
+  {
+    "sha256": "734389ab0087ee912f14d2d4afeaacf1dbd9ddf6d8e3a2416cee1dd2384c2dbb",
+    "path": "plugins/hermes-auto-titler/hermes_auto_titler/titler.py"
+  },
+  {
+    "sha256": "512fb9a6edeb988f99c310c29f25bf610b7c106543192e75cc003a4953955a7e",
+    "path": "plugins/hermes-auto-titler/plugin.yaml"
+  },
+  {
+    "sha256": "35ad9fdf0db23c2c189c5c75ed7c2e9cabb2db90e39eb78f3a543b3c25d56cc8",
+    "path": "plugins/hermes-auto-titler/pyproject.toml"
+  },
+  {
+    "sha256": "66fae3b6e10da7e0df38bce5a616c5d964a10388424a16f6e74d9ed224111e06",
+    "path": "plugins/hermes-auto-titler/scripts/e2e_check.py"
+  },
+  {
+    "sha256": "4141c8a082dc20ad1a3e9e2926ea532fb000bec237de4587ed5c0137850db3b6",
+    "path": "plugins/hermes-auto-titler/scripts/integration_check.py"
+  },
+  {
+    "sha256": "0bb3a0e7a3135d4eb275dd5c30cb51f0a30b5bee9dabcfcb17957adcea4d8052",
+    "path": "plugins/hermes-auto-titler/scripts/prompt_acceptance.py"
+  },
+  {
+    "sha256": "78b0068034da674904900565ac942920b438855e7493b2d7bf0cab0041c45209",
+    "path": "plugins/hermes-auto-titler/scripts/retitle_all.py"
+  },
+  {
+    "sha256": "81de1f78f959e0e3f63ec709ff02af468831cc3596b7b3995b334147150c59dd",
+    "path": "plugins/hermes-auto-titler/scripts/review_sample.py"
+  },
+  {
+    "sha256": "0eb2a4764c7c4c9f9917f8c8fda5417253cd96cc9097954ead7617d64aabc0c9",
+    "path": "plugins/hermes-auto-titler/scripts/simulate_evolution.py"
+  },
+  {
+    "sha256": "04fbc9e11d1430f025255382b805d9387199ee80f588738035f3b4b5c623fbd9",
+    "path": "plugins/hermes-auto-titler/tests/conftest.py"
+  },
+  {
+    "sha256": "6cf8b2948838718c7c9f64e07257f8d8c29b82106a21507764da0b643014e291",
+    "path": "plugins/hermes-auto-titler/tests/test_host_write_contract.py"
+  },
+  {
+    "sha256": "d1a97c1dff3885b7e68f516dc60a83cf848cd7c547bad23e5fec618752d5aa24",
+    "path": "plugins/hermes-auto-titler/tests/test_messages_config.py"
+  },
+  {
+    "sha256": "dc5a60ca9460444ea4f6991c37556f8bfd98518b6800cccfb068f8c5765429d8",
+    "path": "plugins/hermes-auto-titler/tests/test_policy.py"
+  },
+  {
+    "sha256": "f0f880852a929aad2bfd980cc1f192a3dad6c217d92816feb973d186af016669",
+    "path": "plugins/hermes-auto-titler/tests/test_prompt_acceptance.py"
+  },
+  {
+    "sha256": "57ac999256ede6c141415388ba4b9edcfc08b0f10f543dcc0f37c75d3fe2b380",
+    "path": "plugins/hermes-auto-titler/tests/test_state.py"
+  },
+  {
+    "sha256": "5cc1773f969d2dc22b6993bab6ada99d44b61931c5ad7e59d8700372c3d0bdc2",
+    "path": "plugins/hermes-auto-titler/tests/test_titler.py"
+  },
+  {
+    "sha256": "55b2c684ef6bf962ec094d3a6953c915495854bba30ec55e3778fc7f0b1e86bf",
+    "path": "plugins/hermes-context-inbox/__init__.py"
+  },
+  {
+    "sha256": "1d93859c88575839683d4da789cc991fab032c1abd67d039d901c7bd8808b116",
+    "path": "plugins/hermes-context-inbox/plugin.yaml"
+  },
+  {
+    "sha256": "2e6197fc446cea62efa627742a43a6f336cee9e73d9dd338a7f1c26696aeb264",
+    "path": "plugins/hermes-lcm/LICENSE"
+  },
+  {
+    "sha256": "2d38bb89a85cd7074d173056df85b9819bfd937675d6f2bc00e0b43b13f555c4",
+    "path": "plugins/hermes-lcm/__init__.py"
+  },
+  {
+    "sha256": "211b90f7635e1158e293d4d4855d24b2b52b6ce91cf58ee7f976764f9f4d5ed8",
+    "path": "plugins/hermes-lcm/aux_session.py"
+  },
+  {
+    "sha256": "a3cc7821b91a96b2ea4d4b8a27fdb7acea9d035755ed4b7a595e8a1bb2edc922",
+    "path": "plugins/hermes-lcm/bypass.py"
+  },
+  {
+    "sha256": "23087ae3e55a5e305d71ff927552e4bd90ded6c1aec909f285853c92936ec052",
+    "path": "plugins/hermes-lcm/chunking.py"
+  },
+  {
+    "sha256": "f7cf16928e752759e45f0b8bd1b8d17f944d718af02b170fed2b289de8cb690e",
+    "path": "plugins/hermes-lcm/codex_routing.py"
+  },
+  {
+    "sha256": "3c874a867ea26681c33070c8f540d45b9358babe85958a2968edffb064bc8721",
+    "path": "plugins/hermes-lcm/command.py"
+  },
+  {
+    "sha256": "3ad404ac06aecd3624a37b96d50767dc37a51f69c45dadced0e274a05003bdcb",
+    "path": "plugins/hermes-lcm/compaction.py"
+  },
+  {
+    "sha256": "9f5edd93e44143f412b584e85e149f2f24e987414d5fb342ba9ec7318f75cd9e",
+    "path": "plugins/hermes-lcm/config.py"
+  },
+  {
+    "sha256": "4517504a9d05fdb7f0a298fdc4e55c9951929897b049b492efa4186942eb7f37",
+    "path": "plugins/hermes-lcm/dag.py"
+  },
+  {
+    "sha256": "a538cf4a797f7e7559dc9cef0cad24f41994c5b710effdf90953916abdfa19b6",
+    "path": "plugins/hermes-lcm/db_bootstrap.py"
+  },
+  {
+    "sha256": "ab1b47b620181d8823dfaa230f34e31ec557a5bd2a045b7722e9f0cd80db0db1",
+    "path": "plugins/hermes-lcm/diagnostics.py"
+  },
+  {
+    "sha256": "049eb2e1d2fca356a3ec85d099e4b18cef3949e7bff0fdbb88f55c5c14a8da80",
+    "path": "plugins/hermes-lcm/embedding_provider.py"
+  },
+  {
+    "sha256": "df91ca4e37d204e95e1646e2f5944008d0f96b765b13ad3241ad917c88c41259",
+    "path": "plugins/hermes-lcm/engine.py"
+  },
+  {
+    "sha256": "ee2bc1276cd8bb038a8258365df626bed3daf29a494529b1415f604600427792",
+    "path": "plugins/hermes-lcm/engine_registry.py"
+  },
+  {
+    "sha256": "dbed07335c81f3d45d7fb97337e5ed818edc0887dc7f55116105de1df913c3fc",
+    "path": "plugins/hermes-lcm/escalation.py"
+  },
+  {
+    "sha256": "d0dad3d84605f3f6fde39125a490b4bf402e1c03fa9c189adff28e1e9d0ed765",
+    "path": "plugins/hermes-lcm/externalize.py"
+  },
+  {
+    "sha256": "683e07b54c31504d74273ae1ba269e23c956a3c00a664a459914f0ab4ce1379e",
+    "path": "plugins/hermes-lcm/extraction.py"
+  },
+  {
+    "sha256": "3402def382f6ee8d8d0a79925524aa7f6ef2138bb55b217e2ca1304bfbc97aba",
+    "path": "plugins/hermes-lcm/fresh_tail.py"
+  },
+  {
+    "sha256": "8bc3e20b4332cde1ae1b7e54889a821969f25b629a18e47a94fedd1e997383d1",
+    "path": "plugins/hermes-lcm/ingest_protection.py"
+  },
+  {
+    "sha256": "9eba3de2ead41b6458c2fb00c2b52b76f476dbd59f3fda96e008ca24401fa76d",
+    "path": "plugins/hermes-lcm/lifecycle_state.py"
+  },
+  {
+    "sha256": "53c20739d187a0f9116dc88d81e12ac123c51b6a23af9c6c124031b26fb09be5",
+    "path": "plugins/hermes-lcm/maintenance.py"
+  },
+  {
+    "sha256": "cf7748dc27dbb69d6bf0524f7729439b02b6904388c5ea0ab81fb399eee30351",
+    "path": "plugins/hermes-lcm/message_analysis.py"
+  },
+  {
+    "sha256": "56399451c95b62c7941db1d2c359fef7b484fcca51f726454ee2f330189d468a",
+    "path": "plugins/hermes-lcm/message_content.py"
+  },
+  {
+    "sha256": "36bf8da7e26debce9e731adf1de9791bf15785a8a0a29243b1db77a5edba2fb8",
+    "path": "plugins/hermes-lcm/message_patterns.py"
+  },
+  {
+    "sha256": "580859f036c4aeaeb33ed7e9265027330460e63ebbcd246e997cdfc91347118e",
+    "path": "plugins/hermes-lcm/model_routing.py"
+  },
+  {
+    "sha256": "7f1b378560869d68212453f539aca7a8becafaf2717b15404c8e4bef6ed82ced",
+    "path": "plugins/hermes-lcm/placeholder_ledger.py"
+  },
+  {
+    "sha256": "1080cbff0e610948da38178bf4afab61868a468a885ce6e54a8ab25a6cbfd458",
+    "path": "plugins/hermes-lcm/plugin.yaml"
+  },
+  {
+    "sha256": "84cb1f66e5989b25ab07c4be4588757528e35a85ce798384868b721ce59599a9",
+    "path": "plugins/hermes-lcm/presets.py"
+  },
+  {
+    "sha256": "5139d171448eb33e1398f6f4a492e9f4935747addb48a18d9aaa3e9f511147ef",
+    "path": "plugins/hermes-lcm/pyproject.toml"
+  },
+  {
+    "sha256": "6d59a9a073b826bf4c80b95e84ba112ea838493cb607552a360b09b0d4a04a9c",
+    "path": "plugins/hermes-lcm/reconcile.py"
+  },
+  {
+    "sha256": "71e3deeedf882c4c719b2fc66c0f5158287f3f09b243fe43e3b5aed851050726",
+    "path": "plugins/hermes-lcm/reset_state.py"
+  },
+  {
+    "sha256": "e9943a54d0666ca18a788929bc08f6d1fb012095ed4dddb26e890f5f3b86a3d2",
+    "path": "plugins/hermes-lcm/retrieval_core.py"
+  },
+  {
+    "sha256": "7ae8197eb3e29461053eb6ab03f437588b572a2f32f4401c617516087d53acb0",
+    "path": "plugins/hermes-lcm/rollup_builder.py"
+  },
+  {
+    "sha256": "1c7d91de412154086cd4b7311a0ea446960dd3d50a19cf634b4fb97f2c96046b",
+    "path": "plugins/hermes-lcm/rollup_periods.py"
+  },
+  {
+    "sha256": "44e2c8b624e6cf21471b67ca12fd5fdea34e17f2ae8bdf151df0db380f327c9b",
+    "path": "plugins/hermes-lcm/rollup_store.py"
+  },
+  {
+    "sha256": "5503aaa29859d5d2a2f4cb048d89616df937b7284d267a8f0cbe2bea3e4bff37",
+    "path": "plugins/hermes-lcm/runtime_identity.py"
+  },
+  {
+    "sha256": "67f27d94df29b6c41ff278fec64fd60bafd35e0509178ee06372795f4ff6165d",
+    "path": "plugins/hermes-lcm/sanitize.py"
+  },
+  {
+    "sha256": "00646de1f272d40f955f78ff2ad7333838208b6978aca23a6b3510170a4048e1",
+    "path": "plugins/hermes-lcm/schemas.py"
+  },
+  {
+    "sha256": "33ec2b57eb3ad682d47855bce24ead26cc7279dc083197fc3100eee92b99fa37",
+    "path": "plugins/hermes-lcm/search_query.py"
+  },
+  {
+    "sha256": "96102d099238c7901d707d1384ebe73ba4ed09d031d55dfdb38ba314f4b338b1",
+    "path": "plugins/hermes-lcm/session_patterns.py"
+  },
+  {
+    "sha256": "5a06408ba2514344b4b5c56ff5f7db3c966fa892d861aff131cab48a6fae29bc",
+    "path": "plugins/hermes-lcm/sqlite_util.py"
+  },
+  {
+    "sha256": "bc83d0a3b1e8d9bd5f6e9146db90bd3ef5176824aacdbb5870dc103c6b2afa4d",
+    "path": "plugins/hermes-lcm/store.py"
+  },
+  {
+    "sha256": "a8a63c64418dbe9801c8daba04b85c21a6b6d3206fdaebeebe3e8c490427d417",
+    "path": "plugins/hermes-lcm/tokens.py"
+  },
+  {
+    "sha256": "34600364cfac4f33773a13c3c05ee8e8c0c631044f2e1205e54c43038c07544b",
+    "path": "plugins/hermes-lcm/tools.py"
+  },
+  {
+    "sha256": "0313dadfc6a0bad985e5a08246a8ac8fe2448ad8adfabdaa057003a51a93da46",
+    "path": "plugins/hermes-lcm/vector_store.py"
+  },
+  {
+    "sha256": "5fe389e740c72ef436bdafeebe2108608dd156babeaaf0dd6a632be8b3f1ca9b",
+    "path": "plugins/process-observatory/__init__.py"
+  },
+  {
+    "sha256": "abad1c5d24fe421d8c43efe485579361d7be55bd0882767165d2452075674c3f",
+    "path": "plugins/process-observatory/plugin.yaml"
+  },
+  {
+    "sha256": "d2c6dbe3114795beb9ecdebfb18197b08072748527202a427eb07358ca41bc60",
+    "path": "runtime.patch"
+  },
+  {
+    "sha256": "5d20b32ebcedf5900ec73dd43bb621157ea3af8904af244ce55da31af2dabbaa",
+    "path": "second-brain/.hermes-gates.json"
+  },
+  {
+    "sha256": "601476986f5815781c996fa7761da9b3fbb5089d2fb3efec9a2aa130082beebf",
+    "path": "second-brain/README.md"
+  },
+  {
+    "sha256": "c7bca63102d0048237270d13a5c6c4be4a60100363d230a3c90903d031104d02",
+    "path": "second-brain/config/briefing-preferences.example.json"
+  },
+  {
+    "sha256": "c28ce7820959d99269a4c6f2b9d476ba55839a86d16f30ded4fa967c8d6c9851",
+    "path": "second-brain/config/manifest.example.json"
+  },
+  {
+    "sha256": "fb06150bc129335a2c54afa261c77fd5025eae42627c01d58d482ff5cdf85b2b",
+    "path": "second-brain/config/quality-eval.synthetic.json"
+  },
+  {
+    "sha256": "0546702261b751a3cd2006a56a83e81ed004c05a77404865829a11c10b2f951d",
+    "path": "second-brain/launchd/com.example.hermes-second-brain.context-sources.plist.template"
+  },
+  {
+    "sha256": "6646feb8d20af031945ccbd13ee5ca4cb6c51e30ab5884f677ae529bb75d017b",
+    "path": "second-brain/launchd/com.example.hermes-second-brain.health.plist.template"
+  },
+  {
+    "sha256": "06986dc35e0697570c96d7254ef29e450f6ea5686a1c480cd209a65d77dc30f8",
+    "path": "second-brain/launchd/com.example.hermes-second-brain.signal-cli-daemon.plist.template"
+  },
+  {
+    "sha256": "cf20b2d6fe063813f44d74e522043a3281c51c7c9ba483a4954c8a419e04e2dd",
+    "path": "second-brain/launchd/com.example.hermes-second-brain.signal-context-collector.plist.template"
+  },
+  {
+    "sha256": "b967c3bce4b5f4d70e4de2a8969ebdbb56007b3b6fad8c4e17b29cc91b6ae920",
+    "path": "second-brain/launchd/com.example.hermes-second-brain.signal-desktop-history.plist.template"
+  },
+  {
+    "sha256": "40e2fa5a34f7ac82d12c6debfe07e849d9525447661489af428486c051d5400d",
+    "path": "second-brain/launchd/com.example.hermes-second-brain.sync.plist.template"
+  },
+  {
+    "sha256": "3d082a68bddfbd02dab1db479ce4a98d9e135a30e206b69f6dbbdcf0f484c281",
+    "path": "second-brain/pyproject.toml"
+  },
+  {
+    "sha256": "669377057bfd0a61433714951a8abf75875929aab9bddae9a71a955ca5082e9e",
+    "path": "second-brain/scripts/claude_improvement_reviewer.py"
+  },
+  {
+    "sha256": "c1bfc675fad5691c160afe2e0b15a1a9053c06d75fc60d1db9e21175769800b8",
+    "path": "second-brain/scripts/context_cycle.sh"
+  },
+  {
+    "sha256": "518859b7431fb8042e572c2aa1ecba3dd8dfcb230372a150bf851d6ca70630d8",
+    "path": "second-brain/scripts/context_daily_brief.py"
+  },
+  {
+    "sha256": "7701b6db67473217811511f150e5712a257aa2b79ef1f961a51b644427d56efa",
+    "path": "second-brain/scripts/context_watch.py"
+  },
+  {
+    "sha256": "bc05af101212273757452e933948aa496c589b221dbeee8757bb42338180c70b",
+    "path": "second-brain/scripts/deploy_check.sh"
+  },
+  {
+    "sha256": "adc2ae0e02cf00359478dfc26588187bb8f2916781b20563ebbf17e8501d129b",
+    "path": "second-brain/scripts/dream_codex_adapter.py"
+  },
+  {
+    "sha256": "7f877495ed36e5f9b01d09e4ce18465d7b552e6ffc021e2859cd42795da98375",
+    "path": "second-brain/scripts/dream_launcher.py"
+  },
+  {
+    "sha256": "70944266a7b00862f140d9012539403b6ffe0af630b94d688ead7ed3b21e7d0b",
+    "path": "second-brain/scripts/dream_morning_report.py"
+  },
+  {
+    "sha256": "fdb04da60f18b8bb3fe095855ce6672550def2c715482e4f6cd14df77e3ea261",
+    "path": "second-brain/scripts/dream_nightly.py"
+  },
+  {
+    "sha256": "d7a3a2c792ffb6c37b6936850456703a1a0e2ff987cadfb0a810b3c72c29df6b",
+    "path": "second-brain/scripts/dream_publication_ack.py"
+  },
+  {
+    "sha256": "a7ff7cdc99f61031d77f9de65f2ab55595cd13d187fdb4eb11cc6132af14bb07",
+    "path": "second-brain/scripts/dream_sweep.sh"
+  },
+  {
+    "sha256": "ee2b38d70f1075a272ab1febc90c850d1391e9c634554d461325dbdc61b1a1dc",
+    "path": "second-brain/scripts/health_check.sh"
+  },
+  {
+    "sha256": "038bdbb05f9dccb7e0c2ba469936408e426fcd0a314d858fa08d52bec00b81e2",
+    "path": "second-brain/scripts/hermes_coder_review_adapter.py"
+  },
+  {
+    "sha256": "8c8f7d54073497310a4aea2a9c18d631eb0c91e0ac04df9af0e7f4467dbec318",
+    "path": "second-brain/scripts/mail_context_bundle.py"
+  },
+  {
+    "sha256": "aa345d0bb9e459fe30f6c0dd5e74a6d27e262b3e6b4e515832c51ddab5a00dba",
+    "path": "second-brain/scripts/mail_context_collector.py"
+  },
+  {
+    "sha256": "402760bc658284da9d99bc318e520883ac2db5e0ae8b06ba0394d4f44fda9bf5",
+    "path": "second-brain/scripts/mail_context_sync.sh"
+  },
+  {
+    "sha256": "f32b466ef17c1710d8a24fcd2feeddc5babd4702bdc044caa539bf26dfd645b6",
+    "path": "second-brain/scripts/process_improvement_review.py"
+  },
+  {
+    "sha256": "8bc9064b9db1f6e999360f665bf53c406f76100d1ebe94634e79eac93abaf311",
+    "path": "second-brain/scripts/signal_context_collector.py"
+  },
+  {
+    "sha256": "04b8f91092a3bea8ff0c1d3c281f4fed2b669eea119c7fb1ae106064ff8fa083",
+    "path": "second-brain/scripts/signal_desktop_collector.py"
+  },
+  {
+    "sha256": "7b842d79d6181d2baaa495c82edc671478da11ee345510afe29c327c4c6946a4",
+    "path": "second-brain/src/hermes_second_brain/__init__.py"
+  },
+  {
+    "sha256": "307299fda7b77d22c64cb51430ec75e5f59d78e9c948786afb3b2544fe45e4b7",
+    "path": "second-brain/src/hermes_second_brain/__main__.py"
+  },
+  {
+    "sha256": "306198919e849e3e00d8ee4024432e12f1ec02e345adb158049b36dbe2d86298",
+    "path": "second-brain/src/hermes_second_brain/assets/app.js"
+  },
+  {
+    "sha256": "dd8a9b0c06709bbf5d3480c110044603cd97cae80d39f763ddf7b8427a84a2fb",
+    "path": "second-brain/src/hermes_second_brain/assets/index.html"
+  },
+  {
+    "sha256": "324cdb91d46abf4f6c0b3b74ae9a3f2fd897b6db5dcdfd4b1725bd9611949b87",
+    "path": "second-brain/src/hermes_second_brain/assets/style.css"
+  },
+  {
+    "sha256": "25b1ead3486334ab38c920586ac736e7675b46b61bae2c1ac2834e0c2e2dc41f",
+    "path": "second-brain/src/hermes_second_brain/briefing_preferences.py"
+  },
+  {
+    "sha256": "2fbdd18712ecd730a72fd73c04777d2b975e268d09f8982edeb060826b87b23f",
+    "path": "second-brain/src/hermes_second_brain/cli.py"
+  },
+  {
+    "sha256": "84a953aa7005e5973ae8453c4b4c6eab444cd5f140dc0744fc05d617266d2b88",
+    "path": "second-brain/src/hermes_second_brain/context_inbox.py"
+  },
+  {
+    "sha256": "d86ebd2fd8e0090fb7347ccc31466c2f5eb8b71145962c31ae7eb9bcb18ca044",
+    "path": "second-brain/src/hermes_second_brain/context_sources/__init__.py"
+  },
+  {
+    "sha256": "86c11c94c64d7aff7f11aa7c3cc994f5af3f8c195a5d29bbaf4e7614cd8753d9",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/__init__.py"
+  },
+  {
+    "sha256": "4cecf6b9c45b34c83fbd1716a3ab930c559d7bc3eb77898c344dbfa6411856eb",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/calendar.py"
+  },
+  {
+    "sha256": "8ad7f28d2e204d3ab24d20ba1f4cf18502b6218409530b868513431e805c5155",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/composio.py"
+  },
+  {
+    "sha256": "1f8df8579b3059c85efe808410515c6a518d942bf4cb5d0112f44d15917875c3",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/contacts.py"
+  },
+  {
+    "sha256": "30c9e8e0bf840768f5143e9944ebf804cb59567a52994bbdf204384c5f6aae2c",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/messages.py"
+  },
+  {
+    "sha256": "aeeebe8122b9b8a55989082d5fdf7f2d8c960a6351d403408ee445891690e704",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/notes.py"
+  },
+  {
+    "sha256": "8920c59db42afb889fa3a2e54b9cd21b2fad7b382efee18ae0da3638fae948c6",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/photos.py"
+  },
+  {
+    "sha256": "96e12c33fcd24ff3d0207cde0365a853ef6cfc1722de8d3bedad08e416d2f2fb",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/reminders.py"
+  },
+  {
+    "sha256": "ed25e940364cd31090d614d5a06594c564c64771e71b174a55654e2273e4c2a4",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/safari.py"
+  },
+  {
+    "sha256": "eedc9eee1983d9667fe2a3aeb39ff3532a87f95061e00fa69e3f3f9fb421a813",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/safe_import.py"
+  },
+  {
+    "sha256": "6690abf71cf164dc248513542c5bfd0806599c1fe5616102a49899fb9c25b834",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/screen_time.py"
+  },
+  {
+    "sha256": "1740372771117773350b3ea59ef354e6081f97557fea54871c663733c7f98068",
+    "path": "second-brain/src/hermes_second_brain/context_sources/adapters/whatsapp.py"
+  },
+  {
+    "sha256": "0fea6d32a97bbc4d59a8ab9d7e3d1c7f023698fbc519830d8f6d2a939307c007",
+    "path": "second-brain/src/hermes_second_brain/context_sources/base.py"
+  },
+  {
+    "sha256": "4eed368974652a0739204d1fc8905e84571d57c77f36d8c6934df3adfc960e7b",
+    "path": "second-brain/src/hermes_second_brain/context_sources/models.py"
+  },
+  {
+    "sha256": "021d9a57be062f6e278aaff19f32e1d883c000e0828fd1c1eb308e840ec2ecb7",
+    "path": "second-brain/src/hermes_second_brain/context_sources/redaction.py"
+  },
+  {
+    "sha256": "08c03f8e3caa7db2a3cea8dd29d3b5b6ed3cf06070d7f5e1ccbc51b551c13152",
+    "path": "second-brain/src/hermes_second_brain/context_sources/registry.py"
+  },
+  {
+    "sha256": "1588756eb3b600dce5f66a4d6bf2b8bd050bcc41dc88899bece9808dfe886d2a",
+    "path": "second-brain/src/hermes_second_brain/context_sources/runner.py"
+  },
+  {
+    "sha256": "7bc31fff67964ac2e1640a0aadfaf371bb328bb51f6f55f166b1e2f0ac4d18b9",
+    "path": "second-brain/src/hermes_second_brain/context_sources/sqlite_snapshot.py"
+  },
+  {
+    "sha256": "f2f563aadb5aff1746308ad2fa7f1da27676ba84abc3b5e4230041651a034f4b",
+    "path": "second-brain/src/hermes_second_brain/context_sources/store.py"
+  },
+  {
+    "sha256": "16806d1ae9d96b6f39bd24e823c50925b87333e9831f025871a9c58776756969",
+    "path": "second-brain/src/hermes_second_brain/data_ownership.json"
+  },
+  {
+    "sha256": "00684d684d0cf6a2cfdca4906cc4e2b277318ce5d3d2f238c1eea4a2071f6fdf",
+    "path": "second-brain/src/hermes_second_brain/dreaming/__init__.py"
+  },
+  {
+    "sha256": "381aa883a5a0f1ebcb8b250ca0cef20281efbc1438f9495a9c26abefb7a1fa67",
+    "path": "second-brain/src/hermes_second_brain/dreaming/artifacts.py"
+  },
+  {
+    "sha256": "bf54139c2602a88edf3316161896ae2398263378c10a3b3c167fdd68aa3f8466",
+    "path": "second-brain/src/hermes_second_brain/dreaming/config.py"
+  },
+  {
+    "sha256": "d0aaf203e305ad80fd3ac9388bbc2a106e41dfb5c7037ce11cec13ba35c4e557",
+    "path": "second-brain/src/hermes_second_brain/dreaming/ingest.py"
+  },
+  {
+    "sha256": "b7a4e1605d87cad4f04c15ceac6a356805a6dd88331c45bbe04c74ab622741a2",
+    "path": "second-brain/src/hermes_second_brain/dreaming/model.py"
+  },
+  {
+    "sha256": "6f723603393a0b6e3ce379b20d2a777749b64ef220266700162ae25fbac63589",
+    "path": "second-brain/src/hermes_second_brain/dreaming/provenance.py"
+  },
+  {
+    "sha256": "c5d988dd27af7a74d45e639a8534351eca3f737a01d8b56892d326d3b699b1ba",
+    "path": "second-brain/src/hermes_second_brain/dreaming/redaction.py"
+  },
+  {
+    "sha256": "060b1c9545a34bcbcc31e32cd45856fed96a3815e36f1bc97dc89f9f49017913",
+    "path": "second-brain/src/hermes_second_brain/dreaming/retrieval.py"
+  },
+  {
+    "sha256": "17ab07486bb8795506e1236297a4c4844761923c8fbeb1c85c3b2882a56f1df7",
+    "path": "second-brain/src/hermes_second_brain/dreaming/retrieval_support.py"
+  },
+  {
+    "sha256": "476f0f48156370dabc9ffb083d076ef75b4ec1209758e862586311857cdfd7a3",
+    "path": "second-brain/src/hermes_second_brain/dreaming/runner.py"
+  },
+  {
+    "sha256": "6975f8a6d247f8db02e71dfe8ad560aae99dd2598f64f7bb602092f8c22efb24",
+    "path": "second-brain/src/hermes_second_brain/dreaming/schemas.py"
+  },
+  {
+    "sha256": "b28c0c685c6ea09e2faa7e33a92e0609184cb4a35b3d7f28185cb9b039ad1e72",
+    "path": "second-brain/src/hermes_second_brain/dreaming/scoring.py"
+  },
+  {
+    "sha256": "68596e946079436b222daecfeae8a2c30c079e3d4bf920801794c20cdf24d8e9",
+    "path": "second-brain/src/hermes_second_brain/dreaming/store.py"
+  },
+  {
+    "sha256": "9b3d2e7b2b1c232168c1c0fd631e94ae68a5168b6ccec3e929e1d26c75964988",
+    "path": "second-brain/src/hermes_second_brain/embedding_probe.py"
+  },
+  {
+    "sha256": "b4cfe9757cc0d6af5fe1a164201f3b9ada9b3f19722e2ce802ba600a9ff31042",
+    "path": "second-brain/src/hermes_second_brain/eval.py"
+  },
+  {
+    "sha256": "b502f4482d359e18335a4d57e2ecf7efcd6ab08e54ec8183271ddea9437ef9ae",
+    "path": "second-brain/src/hermes_second_brain/graph.py"
+  },
+  {
+    "sha256": "8402fe92b586f205af708acd24156fee68489ce6e8d34618128ec59963563d23",
+    "path": "second-brain/src/hermes_second_brain/ids.py"
+  },
+  {
+    "sha256": "fadfcc15fac3d18efc19192ae80be3383072eeea76ac5c8c35e1f1bcf4f9c2d8",
+    "path": "second-brain/src/hermes_second_brain/improvement.py"
+  },
+  {
+    "sha256": "58a40c8d6a3f5b0861255d003517c1914a755e24f103dc1c977b6c60ecd369cd",
+    "path": "second-brain/src/hermes_second_brain/intake.py"
+  },
+  {
+    "sha256": "9b6173722ff15fabfbc50bfd2f9e9510452123f5069a4590143db6476d8c2d43",
+    "path": "second-brain/src/hermes_second_brain/lcm_export.py"
+  },
+  {
+    "sha256": "d14b88da6c31e2e89c1a52078f3497c2a786b4dc76c8c418ecaa3364f2dc6aeb",
+    "path": "second-brain/src/hermes_second_brain/lifecycle.py"
+  },
+  {
+    "sha256": "48dd7a2fba8a209f498fafc58f077e2c41d236da4c3caa1cb1b83ea46636cca1",
+    "path": "second-brain/src/hermes_second_brain/logging_utils.py"
+  },
+  {
+    "sha256": "bbabf4b96e1116f8afa26e5c994d813ec29a53b5c384963bcd1edd62ca438461",
+    "path": "second-brain/src/hermes_second_brain/mail_context_bundle.py"
+  },
+  {
+    "sha256": "f9a6aa2b43c3c1fda9cd26f5a97bdf5e14e202d0682af315f386ef7593b952d7",
+    "path": "second-brain/src/hermes_second_brain/mail_context_collector.py"
+  },
+  {
+    "sha256": "53b891596090282b3c6ba1b2b89731e04719bba457d7da80743b4e8ae7b33c01",
+    "path": "second-brain/src/hermes_second_brain/mail_ingest.py"
+  },
+  {
+    "sha256": "9f64e6bc77cda62fd4b1299656248e8491cd11edfe54c2983d497a1836e8d34f",
+    "path": "second-brain/src/hermes_second_brain/manifest.py"
+  },
+  {
+    "sha256": "60448fd39987cce87452d46565197f633475c52d936d0c3cdf76d21f88bbbdc7",
+    "path": "second-brain/src/hermes_second_brain/migrate.py"
+  },
+  {
+    "sha256": "10ce65b96c67b453b87f17f29d2a4d2c5e1a71b91d6d73da2f3f7c1eca4d5e01",
+    "path": "second-brain/src/hermes_second_brain/observatory.py"
+  },
+  {
+    "sha256": "631d5b1e216aff0c07bd08eac2d2dd138ba84b5ada3e0ec310be8b602793ab04",
+    "path": "second-brain/src/hermes_second_brain/operations.py"
+  },
+  {
+    "sha256": "f5244b3c49c24951c289a32d7f6ee794b60f376b02fc0d1c93e63d8da7956b8b",
+    "path": "second-brain/src/hermes_second_brain/ov_adapter.py"
+  },
+  {
+    "sha256": "1325d589d6e992f99cb305ae21c69da99e0b1000a7fb851a2650551659e66430",
+    "path": "second-brain/src/hermes_second_brain/ownership.py"
+  },
+  {
+    "sha256": "df58ac53744a46fb0b78948aaa9c461719127504a993a738c4dd9a8dbe305f2f",
+    "path": "second-brain/src/hermes_second_brain/personal_messaging.py"
+  },
+  {
+    "sha256": "10ca468409f28d4a4b8d4864b9ee47a70385bf0bc30b0d66a7d5c43ebb8fa388",
+    "path": "second-brain/src/hermes_second_brain/quality_eval.py"
+  },
+  {
+    "sha256": "c5a310752867b0f95abe3f48a1d171e998fbfc1965a3db0ecde3b4cb31c124cd",
+    "path": "second-brain/src/hermes_second_brain/queue_spool.py"
+  },
+  {
+    "sha256": "35217c82780fd270caa70b5e0a3ed38ff139882ee0684514d105f4781537ebc1",
+    "path": "second-brain/src/hermes_second_brain/review_runner.py"
+  },
+  {
+    "sha256": "475f47fd23e0a2a124332eadf9259938bcbf0716a8241d617aef5e95a90f041c",
+    "path": "second-brain/src/hermes_second_brain/scanner.py"
+  },
+  {
+    "sha256": "eb53dabad163928cfae5351dc3fd1b82e84e2a4bf686f9ea46f243ffaa853ded",
+    "path": "second-brain/src/hermes_second_brain/signal_desktop.py"
+  },
+  {
+    "sha256": "746f8bfb3dbc439898ef5522050a0b62f8a99a4c00917bc4cbae4ca83c336d10",
+    "path": "second-brain/src/hermes_second_brain/state.py"
+  },
+  {
+    "sha256": "0be3f328705b42b4a4a0f0204bd1c8461bcad2266152ab96a3cc6ceed39c1f33",
+    "path": "second-brain/src/hermes_second_brain/sync.py"
+  },
+  {
+    "sha256": "934952db430daf2ab45ba1e35727fe28e8e876f609e4ee23f1aae55287dbb7b5",
+    "path": "second-brain/src/hermes_second_brain/temporary_memory.py"
+  },
+  {
+    "sha256": "55b2c684ef6bf962ec094d3a6953c915495854bba30ec55e3778fc7f0b1e86bf",
+    "path": "second-brain/templates/hermes-context-inbox-plugin/__init__.py"
+  },
+  {
+    "sha256": "1d93859c88575839683d4da789cc991fab032c1abd67d039d901c7bd8808b116",
+    "path": "second-brain/templates/hermes-context-inbox-plugin/plugin.yaml"
+  },
+  {
+    "sha256": "a77c0a8f3abe115a8c7219fa925f5d033c18f22681580ae48b28ebeb117a4c58",
+    "path": "second-brain/templates/hermes-dream-morning-report.sh.example"
+  },
+  {
+    "sha256": "5fe389e740c72ef436bdafeebe2108608dd156babeaaf0dd6a632be8b3f1ca9b",
+    "path": "second-brain/templates/hermes-process-observatory-plugin/__init__.py"
+  },
+  {
+    "sha256": "abad1c5d24fe421d8c43efe485579361d7be55bd0882767165d2452075674c3f",
+    "path": "second-brain/templates/hermes-process-observatory-plugin/plugin.yaml"
+  },
+  {
+    "sha256": "e025f80580898ea20d156b83213647b59b93f20f79d9457e0128e64403aca274",
+    "path": "second-brain/tests/fake_dream_model.py"
+  },
+  {
+    "sha256": "174700d9128d4318e03ecc1de0c6758a93a6acd62fbedcca8242ef185a365cc8",
+    "path": "second-brain/tests/fake_ov.py"
+  },
+  {
+    "sha256": "703b6c5ee7aa0405651f39cfe94a5f6c9ae5eac2e5a8590312c6f67a8c14a0a4",
+    "path": "second-brain/tests/fixtures/corpus/demo_project.md"
+  },
+  {
+    "sha256": "a105eb5163fe004b985eece7a42fc046b5e91583e22b25f196d5d8076123d6c9",
+    "path": "second-brain/tests/fixtures/corpus/ghostty.txt"
+  },
+  {
+    "sha256": "cb1651253e029d8742616bb54b3e66f3696dc1bae227241d0399d3b7b2fb6d8f",
+    "path": "second-brain/tests/fixtures/corpus/secret-token.txt"
+  },
+  {
+    "sha256": "27e244f3e2ce2ab26b4519c97c784e259b2f41a7dd5c935db2a74b06111649b1",
+    "path": "second-brain/tests/fixtures/corpus/workflow.md"
+  },
+  {
+    "sha256": "1f19f7f2f5a58c464fc2971a87b64e4bbc9d21cd7948ec4665424af320d6ed4d",
+    "path": "second-brain/tests/fixtures/eval_spec.json"
+  },
+  {
+    "sha256": "d138addec62f51d9173d7756e247ae3ae32de91171fec98833abe893b2ec3b18",
+    "path": "second-brain/tests/fixtures/mail/events.jsonl"
+  },
+  {
+    "sha256": "2034491af1606f4be5cde0a9cf74a74f6e226a927392cb683501f57efdb6fcb2",
+    "path": "second-brain/tests/fixtures/signal_cli_results.json"
+  },
+  {
+    "sha256": "c6f4a7882bcc7b70ddb0436d207bf93a097c11876b84a3b20677b25f17cbd0fb",
+    "path": "second-brain/tests/test_adapter_mail_migrate_eval.py"
+  },
+  {
+    "sha256": "0899be86f876ea3eb0939cb8f44cf36e8c884c2ac9db70a669734f42dca88669",
+    "path": "second-brain/tests/test_bplus_cli.py"
+  },
+  {
+    "sha256": "15c34b3f1c4152e1689a5a161f3cc76a2cf245c050e8bf94f9c833088a246a5f",
+    "path": "second-brain/tests/test_context_inbox.py"
+  },
+  {
+    "sha256": "b6820636befe3d6b80c766f172219c44b2f0c10a6eb6980538b494d468b1f557",
+    "path": "second-brain/tests/test_context_source_apple.py"
+  },
+  {
+    "sha256": "bb73eccb70fc3930057024dadfd0e127cdd53fcf9c24c0949c2e0df61e0c2f87",
+    "path": "second-brain/tests/test_context_source_composio.py"
+  },
+  {
+    "sha256": "d61cff1d42b359f5333e0f0f47c7dcc777673edc751e61746a9c52b17ce496c0",
+    "path": "second-brain/tests/test_context_source_contacts.py"
+  },
+  {
+    "sha256": "6fa199a54291b2d9c108e5975e6011778c1c597cbd3e9895b995bb4489531006",
+    "path": "second-brain/tests/test_context_source_photos.py"
+  },
+  {
+    "sha256": "ba4f202bc6a8e84e61d4dbfd749642bbef9e4421ba53f99a056f00320a0c605f",
+    "path": "second-brain/tests/test_context_source_reminders.py"
+  },
+  {
+    "sha256": "935aa1a76f62417dc27f838f2024e718704c7a6c6e50d56ba8bbf9b04d059101",
+    "path": "second-brain/tests/test_context_source_repairs.py"
+  },
+  {
+    "sha256": "d9d40c686ae636c87a6dd93da07a0add59c0ab744da062d6ddb5ab13f586cbee",
+    "path": "second-brain/tests/test_context_source_runner.py"
+  },
+  {
+    "sha256": "8416036e011ab12afe12ed25bf2a7b5e23eeeb943aaef984fdeaeaa8fa464cf4",
+    "path": "second-brain/tests/test_context_source_safari.py"
+  },
+  {
+    "sha256": "845c186948ce71dc67beaecb55d08cae52db9a38fe3683785d9882797bec6bd6",
+    "path": "second-brain/tests/test_context_source_safe_import.py"
+  },
+  {
+    "sha256": "2847c62cc3d74199cf8fb52e847d704085d89748293c5d53cd4f98a6c7fcd3de",
+    "path": "second-brain/tests/test_context_source_screen_time.py"
+  },
+  {
+    "sha256": "a751c5bb2a1edcbc53bdaff082a0f7c6dbdaf41b291577cfdd546dd30f0d792e",
+    "path": "second-brain/tests/test_context_source_store.py"
+  },
+  {
+    "sha256": "057263292c2a58b8fdb8cbdb711f073dd15179df128580cce1ba85f2b2068f0d",
+    "path": "second-brain/tests/test_context_watch_multisource.py"
+  },
+  {
+    "sha256": "41722fb9c45db0c7c45f5bbe026e59da86a7c9e2143ff3d8e579a6f35b3853ae",
+    "path": "second-brain/tests/test_dream_provenance.py"
+  },
+  {
+    "sha256": "5ae10e3d506baf30465d4d4e08a4ed9478ee8ede76489b5327f5f11d077e0615",
+    "path": "second-brain/tests/test_dream_retrieval_contract.py"
+  },
+  {
+    "sha256": "4a7a8940bb560e20c526e22b1c06463e9808d8497de92720cd6e850ede068f97",
+    "path": "second-brain/tests/test_dream_retrieval_support.py"
+  },
+  {
+    "sha256": "122c2b786e26e2c0fda9d809d8cfd051da6613ebc805d172973e5623fc454d08",
+    "path": "second-brain/tests/test_dreaming.py"
+  },
+  {
+    "sha256": "590f0d6f62d0aca86cd62a7e829395e6487087f52cb72f305626d555f6de52ce",
+    "path": "second-brain/tests/test_embedding_probe.py"
+  },
+  {
+    "sha256": "96fc2c6b4e63aab3eaca0c5aea1e2e8d5ffbd3cb0c455c1035480b23d1e3e24f",
+    "path": "second-brain/tests/test_graph.py"
+  },
+  {
+    "sha256": "cae7b08849adbb69cd3f203ae9f062c7de5ca6e6d57606fe831f02e95240b1c8",
+    "path": "second-brain/tests/test_improvement.py"
+  },
+  {
+    "sha256": "2a8f9bfc5804641631b59748d7fa1f4dd735d95f7a6b913933e03d3ce194aaf3",
+    "path": "second-brain/tests/test_lifecycle.py"
+  },
+  {
+    "sha256": "d94df88ee3ec74c851c85b5f827d485d9b6643936dfea9f502936957b5e6c199",
+    "path": "second-brain/tests/test_mail_context_collector.py"
+  },
+  {
+    "sha256": "0522203b179da94af78e7e5eea0d9de33bc11f3a9ae4daa7bd1df234522a0d45",
+    "path": "second-brain/tests/test_observatory.py"
+  },
+  {
+    "sha256": "c2cf06ca100971e22ef3a98e30d54e3dcb87efcc44c76e99d85b2e80d6bc7a2c",
+    "path": "second-brain/tests/test_operations.py"
+  },
+  {
+    "sha256": "0ecae91f66e6f4da3e34c15e5a669504934cb6a515179353d54fe0c6dd0b3b3c",
+    "path": "second-brain/tests/test_personal_messaging.py"
+  },
+  {
+    "sha256": "9cfff1f6000c856a00b76d6e8a0913bac618aab70c5d6447c654b147ec4b6464",
+    "path": "second-brain/tests/test_piet_foundations.py"
+  },
+  {
+    "sha256": "600dc861fc8d082e9f92b5a0ec004349566dc6cc77310721c9e16a144938f8ed",
+    "path": "second-brain/tests/test_quality_eval.py"
+  },
+  {
+    "sha256": "e89303c451de0b98336008707c43d39144552c7a7979620e5c6fff0d6ccf5551",
+    "path": "second-brain/tests/test_scanner_state_sync.py"
+  },
+  {
+    "sha256": "8bcc38e0b59f8918c6f8e891c0e45426e3db27ee27ba52805850790a462bd43a",
+    "path": "second-brain/tests/test_signal_context_collector.py"
+  },
+  {
+    "sha256": "45eaa3bde94cde265e8efccfbcdbd30ca5fd3655981cbbf5f34e93e683b16cb2",
+    "path": "second-brain/tests/test_signal_desktop_collector.py"
+  },
+  {
+    "sha256": "909cb19d8c664baa58e2fe39881670368ee9d1bf36ac6b6a25b80ef07ad906f6",
+    "path": "skills/cli-worker-worktree-hygiene/SKILL.md"
+  },
+  {
+    "sha256": "75022dd21d1f6380699ef4c34bfa71e212d78e63a1d787d8a8137f6fbe428784",
+    "path": "skills/cli-worker-worktree-hygiene/references/clean-worktree-smoke.md"
+  },
+  {
+    "sha256": "d62554263461919dff7d77c3c0c284c2190c894f312a84d7a770a030dab642dc",
+    "path": "skills/codebase-inspection/SKILL.md"
+  },
+  {
+    "sha256": "9fd9b4023433d750c0f2c18cef3483d1477f527f26f38b87aa04ad1579b94868",
+    "path": "skills/cron-reliability-recovery/SKILL.md"
+  },
+  {
+    "sha256": "4444c610fcc4084c479fff2665d06e75d9579c343ab4fe3b007d320020312ef6",
+    "path": "skills/delegation-recovery/SKILL.md"
+  },
+  {
+    "sha256": "90071da5f8b98cd8ffd6bcd744a43258c23bf9d6e0363e894098de9fd9f3a386",
+    "path": "skills/delegation-recovery/references/delegation-failure-recovery.md"
+  },
+  {
+    "sha256": "79e599d23839c5d6c499ceeeb3d6c33dd9bf116fd0635f4aced321309de18d7d",
+    "path": "skills/delegation-recovery/references/visible-parallel-subagent-demo.md"
+  },
+  {
+    "sha256": "add8ce876d24dac7674f320aacb1c17e9b4fcd7e058de347f322b2385a3ec5a5",
+    "path": "skills/hermes-agent-skill-authoring/SKILL.md"
+  },
+  {
+    "sha256": "15bbd8702b5340f366cfc8f672c3235187dc9f317303df29e6977e7f6322bc78",
+    "path": "skills/hermes-install-audit/SKILL.md"
+  },
+  {
+    "sha256": "68efd209d28ac5aadc86b1bd8a1ccfd5877008c8c066abc82dd64b34d929bf4c",
+    "path": "skills/hermes-install-audit/references/freshness-audit-recipes.md"
+  },
+  {
+    "sha256": "f3071100fc72c82993e26bf3867fa9b4afb6e4a7a3b7827a619bcee79f9a4bcf",
+    "path": "skills/hermes-telegram-setup/SKILL.md"
+  },
+  {
+    "sha256": "8693f2504f734c73d0b7a606b1871f338df6817c1448e0fa7d704840e06a5d92",
+    "path": "skills/hermes-telegram-setup/references/active-terminal-session-discovery.md"
+  },
+  {
+    "sha256": "3071d1469c8061e5973a2a53eefd3c81b3545e04a9ce2986199b6d0e932942e6",
+    "path": "skills/hermes-telegram-setup/references/botfather-mini-app-session.md"
+  },
+  {
+    "sha256": "4c45e43f86024e27394e69e8f925a876315dfc8f21af171d6f5bfc182d72634f",
+    "path": "skills/hermes-telegram-setup/references/hermes-profile-multi-bot.md"
+  },
+  {
+    "sha256": "ab928c6c011f5aa64f8dfd8105ff9869c13b53865d77e8a8037cf841574e916f",
+    "path": "skills/hermes-telegram-setup/references/macos-multi-user-parallel-gateways.md"
+  },
+  {
+    "sha256": "6f28686085c580894becb1271ac35db5000d8176dfae19dbe59b6be53d2d62e1",
+    "path": "skills/hermes-telegram-setup/references/multi-session-spawning.md"
+  },
+  {
+    "sha256": "6f5e873d54e535aa912779222a242cd6f24b96e5649d348227bf128b596b6bf3",
+    "path": "skills/hermes-telegram-setup/references/resume-replay-and-browser-verification.md"
+  },
+  {
+    "sha256": "3730b5ba7087acac58e0799d9dab86ab05e5463a785252cbe4cb6106ec2dee93",
+    "path": "skills/hermes-telegram-setup/references/telegram-api-constraints.md"
+  },
+  {
+    "sha256": "1aa5c012f3a3654f37cbc1b57adffa47177e5ce8d9a7bdbfdbbf121e61b3a61d",
+    "path": "skills/hermes-telegram-setup/references/telegram-bot-avatar-artwork.md"
+  },
+  {
+    "sha256": "c790936fdcc7a778269191a1f4e1c7615d30b419aec77593daa9c6570823a5cd",
+    "path": "skills/hermes-telegram-setup/references/telegram-env-vars.md"
+  },
+  {
+    "sha256": "43acdf20d98f871620d8ffb7bbcd0636f87769b7efb395af8a2c6f77034e4f82",
+    "path": "skills/hermes-telegram-setup/references/telegram-group-troubleshooting.md"
+  },
+  {
+    "sha256": "20855ba32357280c652c51c3c64bb707f5fc3f645a4c34a140d0c8d467f1d32a",
+    "path": "skills/hermes-telegram-setup/scripts/tg_userbot.py"
+  },
+  {
+    "sha256": "a073b076f9de6d00756a3ea8274d94573f041b100a889c5bb01d72a60844c896",
+    "path": "skills/hermes-tui-input-routing/SKILL.md"
+  },
+  {
+    "sha256": "b13d8b9f789635e83ff76419937c258148305dcee1bbcb8682c4ffff9589737f",
+    "path": "skills/hermes-tui-input-routing/references/input-routing-hotkeys.md"
+  },
+  {
+    "sha256": "495716ecac249fae49f671bb23ab88e76f03ffce0b317730298fbdb0037616c2",
+    "path": "skills/hermes-voice-conversation-setup/SKILL.md"
+  },
+  {
+    "sha256": "6605cdbedf6ae146ed957a2d3ea45d1ec5c8b6ab89a46084c43a4314fe219b30",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-autojoin-and-supervised-restart.md"
+  },
+  {
+    "sha256": "0f232f1b2fe3984966d893ff8b71d3252555a8facd10fff90df087f72b383ba7",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-live-coworker-and-bilingual-voice.md"
+  },
+  {
+    "sha256": "6fe646e1d3e68c71a07752e77fa7ecc63cc1731c0d35108252c1901bd6a62e04",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-live-coworker.md"
+  },
+  {
+    "sha256": "f4d570a9f2a04c0ebad1b014ab1168fae9937bc3368aefc1a2ce88bd3375ccce",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-realtime-latency.md"
+  },
+  {
+    "sha256": "198617a6627c4bc8a01dea62e2711381179f6ffd75fd3c13e76b772a4c583b2b",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-voice-receive-qa.md"
+  },
+  {
+    "sha256": "4232e294e638e56fea841a7a5542081860f8cf8c4ef2e82e7cabb8826c13dd61",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-voice-routing-runtime-notes.md"
+  },
+  {
+    "sha256": "518249a5909d0073bcfbf6a6b6f9265f08c1ba3454727cec9d8d36e1674ea677",
+    "path": "skills/hermes-voice-conversation-setup/references/discord-voice-working-sound.md"
+  },
+  {
+    "sha256": "b15f84a50a2bbfe35526e54b1dc3b71d17e49d0e715def2ae2a693d53cf25cb0",
+    "path": "skills/hermes-voice-conversation-setup/references/parakeet-mlx-stt-provider.md"
+  },
+  {
+    "sha256": "86481740398b9d0854a8926b63c4bca7c8829aa6ccd363baf3c98124c921fb57",
+    "path": "skills/hermes-voice-conversation-setup/references/stt-language-selection.md"
+  },
+  {
+    "sha256": "fd4c4974ac06a8d6a0fca71ca5edcd0a68b846a840042ed9042efe6840586d69",
+    "path": "skills/hermes-voice-conversation-setup/references/tts-voice-selection-and-jarvis.md"
+  },
+  {
+    "sha256": "b701c0d02d193c6b0d8e0f9549e8ec8047c0b188dd2a38dd87ed099761665ace",
+    "path": "skills/hermes-voice-conversation-setup/references/voice-acknowledgement-pattern.md"
+  },
+  {
+    "sha256": "ffa242bccf196991ed37aa6f5cb33d8e7be24491b5d27c9f592b129795b41b26",
+    "path": "skills/hermes-voice-conversation-setup/references/voice-command-routing.md"
+  },
+  {
+    "sha256": "aa29442bbe2544069b9e2d86cb8d8447df9607a9108c788f6329d677c571e2c4",
+    "path": "skills/hermes-voice-conversation-setup/references/voice-mode-doc-notes.md"
+  },
+  {
+    "sha256": "5408b8fc6de004c3f152057180ee751fbaa9a0626d33586bfdfaf62727211320",
+    "path": "skills/hermes-voice-conversation-setup/scripts/jarvis_style_tts.py"
+  },
+  {
+    "sha256": "134a2d75af4e9270d1e5d0398f12925256d3c06ec8f7a2ba438027ddc01b4539",
+    "path": "skills/hermes-voice-conversation-setup/scripts/parakeet_stt_limited.py"
+  },
+  {
+    "sha256": "6a172efe71538cfcb4ee0c9192ccbffd13ceef86bb98371d1504385447f347b0",
+    "path": "skills/isolated-worktree-implementation/SKILL.md"
+  },
+  {
+    "sha256": "297107e0286ca2d39869c5aed81925a4b29022d9e06668ccc3d28d53fb90251d",
+    "path": "skills/isolated-worktree-implementation/references/artifact-cleanup.md"
+  },
+  {
+    "sha256": "7daca828797aeaae5f685b313f058a9d42fc3556aa9563e9840cd7f76fd42b75",
+    "path": "skills/isolated-worktree-implementation/references/cloud-preview-reconciliation.md"
+  },
+  {
+    "sha256": "3a056ed9974295c44c7f5484002c545271ce379f6a8ece574c13ceda4e3c4c07",
+    "path": "skills/isolated-worktree-implementation/references/demo-artifact-verification.md"
+  },
+  {
+    "sha256": "93b941fabb41c9a619536bb22fb9f75e689b7c68548f7ad96143c5a4a613a0ad",
+    "path": "skills/isolated-worktree-implementation/references/implementation-brief-boundaries.md"
+  },
+  {
+    "sha256": "db02199d171505ff53e241a3cd051f54182db59aa5574680a3ab79ebe80f94dd",
+    "path": "skills/isolated-worktree-implementation/references/implementation-brief-template.md"
+  },
+  {
+    "sha256": "0a37d4cbd779b3e108eb09a1626d7af0077fa618291019f489b7bdc6c6c348e3",
+    "path": "skills/isolated-worktree-implementation/references/ios-xcode-verification.md"
+  },
+  {
+    "sha256": "9af0f7e3e059896a9505d014204c9f405e65fe569af69663092d10837853e9fd",
+    "path": "skills/isolated-worktree-implementation/references/long-running-worker-backup-and-rollback.md"
+  },
+  {
+    "sha256": "932198b20342a9424b9bc13cd9f230629f060d90094715e374ea1642f0b2e847",
+    "path": "skills/isolated-worktree-implementation/references/quality-first-worktree-foundations.md"
+  },
+  {
+    "sha256": "ddfbbacf476b95155f294318964b35d16de2ad9f0b77fc267dddfc7f52209f3b",
+    "path": "skills/isolated-worktree-implementation/references/read-only-verifier-sandboxes.md"
+  },
+  {
+    "sha256": "04c563dce4cfd480558fce1a0efdb20275ba556075beac264c1ce54ed05e8100",
+    "path": "skills/isolated-worktree-implementation/references/review-driven-hardening-loop.md"
+  },
+  {
+    "sha256": "691b458c0582070ad4a41e4d73850a0483a7968d8bda394cebdaf8f52375a485",
+    "path": "skills/release-readiness-inventory/SKILL.md"
+  },
+  {
+    "sha256": "aa87bc40146c0e3cf7d0b18f20670203a63320c62a5f7497c0af65cecfa42856",
+    "path": "skills/release-readiness-inventory/references/readiness-inventory-and-live-verification.md"
+  },
+  {
+    "sha256": "75e6cde8edaaf5e24e2904294631d44a4ab2efb856b39988aa08f8119fc40630",
+    "path": "skills/retrieval-architecture/SKILL.md"
+  },
+  {
+    "sha256": "a53ea47ebead08dd6b791d881f973a7073907f6ece4ee9edc30db7bdc38b1097",
+    "path": "skills/retrieval-architecture/references/local-hermes-openviking-notes.md"
+  },
+  {
+    "sha256": "50661f521042bd32cbce7e169f287dbb8f06912f72e3e5c3257177481e477b9d",
+    "path": "skills/session-hygiene-management/SKILL.md"
+  },
+  {
+    "sha256": "014c17c6d0e4f029c36cc3a6ce0d71ce0437776e301bded2723a73f56c8d237c",
+    "path": "skills/session-hygiene-management/references/desktop-session-hygiene.md"
+  },
+  {
+    "sha256": "9def3b961b8548f833941ba757d873a9e04cb825d823e66511189ba5c14be0bb",
+    "path": "skills/session-hygiene-management/references/hermes-autostart-audit.md"
+  },
+  {
+    "sha256": "5bb7229fcce863244e7db87cafdb98cf1b7f743b9d9794ff35efabc246274ad0",
+    "path": "skills/session-hygiene-management/references/many-open-sessions-vs-process-stacks.md"
+  },
+  {
+    "sha256": "0192152d4d7220975bcd68be848ea7d3a2c5c873dfb20c1f1341efae9927d233",
+    "path": "skills/session-hygiene-management/references/resumed-session-watchdog.md"
+  },
+  {
+    "sha256": "ad124c28aedbc90f4feab08af7ce6d30a0be350686d0f2346509daa91298c0d1",
+    "path": "skills/session-hygiene-management/references/session-auto-archive-3-days.md"
+  },
+  {
+    "sha256": "718ac3185bf6522dee7838cce53e5c13bfd51d82330dd056270fdab95375f93b",
+    "path": "skills/session-hygiene-management/references/visible-worker-session-routing.md"
+  },
+  {
+    "sha256": "dfc803fb2b9712d641597a39b57bd4848fd1a6b0934b17ac52bd7d1d6a905b4f",
+    "path": "source-lock.json"
+  }
+]

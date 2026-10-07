@@ -1,0 +1,12 @@
+{
+  "snapshot_date": "2026-10-06",
+  "upstream_repository": "https://github.com/NousResearch/hermes-agent.git",
+  "upstream_commit": "dee30d123defbb61ec53ec17bf7aae281563db49",
+  "source_head": "c95750972d3bcfa4e6126c6a02a2958cc67e7170",
+  "runtime_version": "0.21.1",
+  "uncommitted_runtime_changes_included": true,
+  "excluded_unintegrated_prototypes": [
+    "plugins/platforms/telegram/turn_controls.py",
+    "tests/gateway/test_telegram_turn_controls.py"
+  ]
+}

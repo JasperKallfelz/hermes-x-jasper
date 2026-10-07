@@ -1,0 +1,16 @@
+{
+  "excluded_platforms": [],
+  "included_sections": [
+    "events",
+    "reminders",
+    "habits"
+  ],
+  "limits": {
+    "events": 20,
+    "habits": 10,
+    "reminders": 10
+  },
+  "max_output_characters": 3900,
+  "quiet_when_empty": true,
+  "schema_version": 1
+}
